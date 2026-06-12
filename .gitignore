@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+
+# Build and packaging output
+dist/
+build/
+out/
+release/
+web-ext-artifacts/
+*.crx
+*.pem
+*.zip
+
+# Test and coverage output
+coverage/
+playwright-report/
+test-results/
+
+# Tool caches
+.cache/
+.parcel-cache/
+.turbo/
+.vite/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Local environment files
+.env
+.env.*
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini

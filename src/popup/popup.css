@@ -1,0 +1,138 @@
+:root {
+  color-scheme: light dark;
+  font-family: Arial, "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+}
+
+body {
+  min-width: 288px;
+  margin: 0;
+  color: #1f2328;
+  background: #f7f8fa;
+}
+
+.panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.header,
+.switch-row,
+.field span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+h1 {
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.2;
+}
+
+.badge {
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: #fff;
+  background: #d62828;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.switch-row {
+  padding: 10px 0;
+  border-top: 1px solid #d8dee4;
+  border-bottom: 1px solid #d8dee4;
+  font-weight: 700;
+}
+
+input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  accent-color: #d62828;
+}
+
+.field {
+  display: grid;
+  gap: 8px;
+}
+
+.field strong {
+  min-width: 46px;
+  text-align: right;
+  font-size: 12px;
+  font-weight: 700;
+  color: #57606a;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #d62828;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.segmented button {
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  border-left: 1px solid #d0d7de;
+  color: #57606a;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.segmented button:first-child {
+  border-left: 0;
+}
+
+.segmented button:hover {
+  background: #f0f2f4;
+}
+
+.segmented button.is-selected {
+  color: #fff;
+  background: #d62828;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    color: #f0f3f6;
+    background: #161b22;
+  }
+
+  .switch-row {
+    border-color: #30363d;
+  }
+
+  .field strong {
+    color: #8b949e;
+  }
+
+  .segmented {
+    border-color: #30363d;
+    background: #0d1117;
+  }
+
+  .segmented button {
+    border-color: #30363d;
+    color: #8b949e;
+  }
+
+  .segmented button:hover {
+    background: #21262d;
+  }
+}

@@ -1,0 +1,35 @@
+.youtubi-player-host {
+  position: relative !important;
+}
+
+.youtubi-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2147483000;
+  overflow: hidden;
+  pointer-events: none;
+  contain: layout style paint;
+  font-family: Roboto, Arial, "Microsoft YaHei", sans-serif;
+}
+
+.youtubi-layer[hidden] {
+  display: none !important;
+}
+
+.youtubi-item {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: block;
+  max-width: none;
+  white-space: nowrap;
+  color: #fff;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.9),
+    1px 0 2px rgba(0, 0, 0, 0.75),
+    -1px 0 2px rgba(0, 0, 0, 0.75);
+  will-change: transform;
+}

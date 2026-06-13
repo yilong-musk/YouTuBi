@@ -1,31 +1,36 @@
 (() => {
   const START_OFFSET_SECONDS = 3;
-  const END_OFFSET_SECONDS = 5;
-  const TICK_MS = 250;
-  const SEEK_THRESHOLD_SECONDS = 1.5;
-  const LOAD_WINDOW_BACK_SECONDS = 3.5;
-  const LOAD_WINDOW_FORWARD_SECONDS = 1.5;
-  const SEEK_WINDOW_BACK_SECONDS = 3.5;
-  const SEEK_WINDOW_FORWARD_SECONDS = 2;
-  const MAX_EMIT_PER_TICK = 6;
-  const MAX_EMIT_PER_WINDOW_SYNC = 12;
+  const END_MARGIN_SECONDS = 0.25;
+  const INITIAL_RELEASE_TIMEOUT_MS = 5000;
+  const RETRY_RELEASE_MS = 250;
+  const LATE_COMMENT_LEAD_SECONDS = 1.25;
+  const MIN_LATE_INTERVAL_SECONDS = 0.35;
+  const MAX_LATE_INTERVAL_SECONDS = 2;
 
   const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
   class TimelineScheduler {
-    constructor({ layer, video }) {
+    constructor({ layer, video, onStateChange, autoRelease = true }) {
       this.layer = layer;
       this.video = video;
+      this.onStateChange = onStateChange;
+      this.autoReleaseDelay = autoRelease ? INITIAL_RELEASE_TIMEOUT_MS : 0;
       this.comments = new Map();
       this.timeline = [];
-      this.fired = new Set();
-      this.timer = 0;
-      this.buildTimer = 0;
-      this.lastCurrentTime = null;
+      this.initialReleased = false;
+      this.initialReleaseTimer = 0;
+      this.frameRequest = 0;
       this.lastDuration = 0;
-      this.pendingWindowSync = null;
+      this.lastRenderedItems = 0;
+      this.nextLateAppearAt = null;
+      this.initialReleaseRequested = false;
+      this.boundRender = () => this.renderNow();
+      this.boundPlay = () => this.resumePlayback();
+      this.boundSeek = () => this.handleSeek();
+      this.boundEnded = () => this.finishAtEnd();
+      this.boundDurationChange = () => this.handleDurationChange();
 
       this.start();
     }
@@ -36,75 +41,228 @@
       }
 
       this.comments.set(comment.id, comment);
-      this.scheduleBuild();
-    }
 
-    start() {
-      if (this.timer) {
+      if (!this.initialReleased) {
+        this.notifyState({ status: "buffering-comments" });
         return;
       }
 
-      this.timer = window.setInterval(() => this.tick(), TICK_MS);
-      this.scheduleBuild();
+      this.timeline.push(this.createLateTimelineItem(comment));
+      this.timeline.sort((left, right) => left.appearAt - right.appearAt || this.compareOrder(left, right));
+      this.publishTimeline("timeline-updated");
     }
 
-    scheduleBuild() {
-      window.clearTimeout(this.buildTimer);
-      this.buildTimer = window.setTimeout(() => {
-        this.buildTimer = 0;
-        this.rebuildTimeline();
-      }, 120);
+    start() {
+      if (!this.video) {
+        return;
+      }
+
+      this.video.addEventListener("play", this.boundPlay);
+      this.video.addEventListener("playing", this.boundPlay);
+      this.video.addEventListener("pause", this.boundRender);
+      this.video.addEventListener("seeking", this.boundSeek);
+      this.video.addEventListener("seeked", this.boundRender);
+      this.video.addEventListener("timeupdate", this.boundRender);
+      this.video.addEventListener("ended", this.boundEnded);
+      this.video.addEventListener("durationchange", this.boundDurationChange);
+
+      if (this.autoReleaseDelay > 0) {
+        this.startInitialReleaseTimer(this.autoReleaseDelay, "timeout");
+      }
+      this.renderNow();
+      this.startFrameLoop();
     }
 
-    rebuildTimeline() {
+    startInitialReleaseTimer(delay, reason = "timeout") {
+      if (this.initialReleased) {
+        return;
+      }
+
+      window.clearTimeout(this.initialReleaseTimer);
+      this.initialReleaseTimer = window.setTimeout(() => {
+        this.initialReleaseTimer = 0;
+        this.initialReleaseRequested = true;
+        this.releaseInitialTimeline(reason);
+      }, delay);
+    }
+
+    completeInitialLoad(reason = "source-done") {
+      this.initialReleaseRequested = true;
+      this.releaseInitialTimeline(reason);
+    }
+
+    releaseInitialTimeline(reason) {
+      if (this.initialReleased) {
+        return;
+      }
+
+      const duration = this.getDuration();
+      if (!duration) {
+        this.startInitialReleaseTimer(RETRY_RELEASE_MS, reason);
+        return;
+      }
+
+      window.clearTimeout(this.initialReleaseTimer);
+      this.initialReleaseTimer = 0;
+
+      this.timeline = this.buildTimeline(duration);
+      this.initialReleased = true;
+      this.lastDuration = duration;
+      this.nextLateAppearAt = this.getFutureStartTime();
+      this.publishTimeline(`timeline-ready:${reason}`);
+    }
+
+    rebuildTimeline(reason = "timeline-rebuilt") {
+      if (!this.initialReleased) {
+        if (this.initialReleaseRequested) {
+          this.releaseInitialTimeline(reason);
+        }
+        return;
+      }
+
       const duration = this.getDuration();
       if (!duration) {
         return;
       }
 
-      const comments = Array.from(this.comments.values());
-      const validTimedComments = comments.filter((comment) => isFiniteNumber(comment.publishedAt));
-      const firstCommentTime = validTimedComments.length
-        ? Math.min(...validTimedComments.map((comment) => comment.publishedAt))
-        : null;
-      const lastCommentTime = validTimedComments.length
-        ? Math.max(...validTimedComments.map((comment) => comment.publishedAt))
-        : null;
-      const hasCommentTimeRange =
-        isFiniteNumber(firstCommentTime) && isFiniteNumber(lastCommentTime) && lastCommentTime > firstCommentTime;
-      const sorted = comments.slice().sort((left, right) => this.compareComments(left, right));
-      const usableDuration = Math.max(1, duration - START_OFFSET_SECONDS - END_OFFSET_SECONDS);
+      this.timeline = this.buildTimeline(duration);
+      this.lastDuration = duration;
+      this.nextLateAppearAt = this.getFutureStartTime();
+      this.publishTimeline(reason);
+    }
 
-      this.timeline = sorted
+    buildTimeline(duration) {
+      const sorted = Array.from(this.comments.values()).sort((left, right) => this.compareComments(left, right));
+
+      return sorted
         .map((comment, index) => {
-          const ratio = hasCommentTimeRange && isFiniteNumber(comment.publishedAt)
-            ? (comment.publishedAt - firstCommentTime) / (lastCommentTime - firstCommentTime)
-            : this.fallbackRatio(index, sorted.length);
+          const ratio = this.fallbackRatio(index, sorted.length);
+          const travelDuration = this.getTravelDuration(comment.text);
+          const latestAppearAt = this.getLatestAppearAt(duration, travelDuration);
+          const firstAppearAt = Math.min(START_OFFSET_SECONDS, latestAppearAt);
+          const firstFinishAt = firstAppearAt + travelDuration;
+          const latestFinishAt = Math.max(firstFinishAt, duration - END_MARGIN_SECONDS);
+          const targetFinishAt = firstFinishAt + clamp(ratio, 0, 1) * (latestFinishAt - firstFinishAt);
 
           return {
             id: comment.id,
             text: comment.text,
             comment,
-            appearAt: START_OFFSET_SECONDS + clamp(ratio, 0, 1) * usableDuration
+            order: comment.order,
+            appearAt: Math.min(latestAppearAt, Math.max(0, targetFinishAt - travelDuration))
           };
         })
-        .sort((left, right) => left.appearAt - right.appearAt || left.comment.order - right.comment.order);
+        .sort((left, right) => left.appearAt - right.appearAt || this.compareOrder(left, right));
+    }
+
+    createLateTimelineItem(comment) {
+      const duration = this.getDuration() || this.lastDuration || 1;
+      const currentTime = this.getCurrentTime() || 0;
+      const interval = this.getLateInterval(duration);
+      const travelDuration = this.getTravelDuration(comment.text);
+      const latestUsefulTime = this.getLatestAppearAt(duration, travelDuration);
+      const preferredTime = Math.max(
+        Math.min(START_OFFSET_SECONDS, latestUsefulTime),
+        currentTime + LATE_COMMENT_LEAD_SECONDS,
+        isFiniteNumber(this.nextLateAppearAt) ? this.nextLateAppearAt : 0
+      );
+      const appearAt = Math.min(preferredTime, latestUsefulTime);
+
+      this.nextLateAppearAt = preferredTime + interval;
+
+      return {
+        id: comment.id,
+        text: comment.text,
+        comment,
+        order: comment.order,
+        appearAt
+      };
+    }
+
+    getFutureStartTime() {
+      const currentTime = this.getCurrentTime() || 0;
+      const duration = this.getDuration() || this.lastDuration || 1;
+      const latestAppearAt = this.getLatestAppearAt(duration, this.getMaxTravelDuration(this.comments.values()));
+      return Math.min(
+        latestAppearAt,
+        Math.max(Math.min(START_OFFSET_SECONDS, latestAppearAt), currentTime + LATE_COMMENT_LEAD_SECONDS)
+      );
+    }
+
+    getLateInterval(duration) {
+      const latestAppearAt = this.getLatestAppearAt(duration, this.getMaxTravelDuration(this.comments.values()));
+      const firstAppearAt = Math.min(START_OFFSET_SECONDS, latestAppearAt);
+      const usableDuration = Math.max(1, latestAppearAt - firstAppearAt);
+      return clamp(
+        usableDuration / Math.max(1, this.comments.size),
+        MIN_LATE_INTERVAL_SECONDS,
+        MAX_LATE_INTERVAL_SECONDS
+      );
+    }
+
+    getTravelDuration(text) {
+      if (this.layer && typeof this.layer.getTravelDuration === "function") {
+        return this.layer.getTravelDuration(text);
+      }
+
+      return MAX_LATE_INTERVAL_SECONDS;
+    }
+
+    getMaxTravelDuration(comments) {
+      return Array.from(comments).reduce((maxDuration, comment) => {
+        const travelDuration = this.getTravelDuration(comment && comment.text);
+        return isFiniteNumber(travelDuration) ? Math.max(maxDuration, travelDuration) : maxDuration;
+      }, 0);
+    }
+
+    getLatestAppearAt(duration, travelDuration) {
+      const latestAppearAt = duration - END_MARGIN_SECONDS - Math.max(0, travelDuration || 0);
+      return Math.max(0, latestAppearAt);
+    }
+
+    publishTimeline(status) {
+      if (this.layer && typeof this.layer.setTimeline === "function") {
+        this.layer.setTimeline(this.timeline);
+      }
+
+      this.renderNow();
+      this.notifyState({ status });
+    }
+
+    handleDurationChange() {
+      const duration = this.getDuration();
+      if (!duration) {
+        return;
+      }
 
       this.lastDuration = duration;
-      this.syncToWindow(
-        this.getCurrentTime(),
-        LOAD_WINDOW_BACK_SECONDS,
-        LOAD_WINDOW_FORWARD_SECONDS,
-        MAX_EMIT_PER_WINDOW_SYNC,
-        false
-      );
+
+      if (!this.initialReleased) {
+        if (this.initialReleaseRequested) {
+          this.releaseInitialTimeline("duration-ready");
+        }
+        return;
+      }
+
+      this.rebuildTimeline("duration-updated");
+    }
+
+    handleLayoutTimingChange(reason = "layout-updated") {
+      this.rebuildTimeline(reason);
     }
 
     compareComments(left, right) {
       const leftTime = isFiniteNumber(left.publishedAt) ? left.publishedAt : Number.POSITIVE_INFINITY;
       const rightTime = isFiniteNumber(right.publishedAt) ? right.publishedAt : Number.POSITIVE_INFINITY;
 
-      return leftTime - rightTime || left.order - right.order;
+      return leftTime - rightTime || this.compareOrder(left, right);
+    }
+
+    compareOrder(left, right) {
+      const leftOrder = isFiniteNumber(left.order) ? left.order : 0;
+      const rightOrder = isFiniteNumber(right.order) ? right.order : 0;
+
+      return leftOrder - rightOrder;
     }
 
     fallbackRatio(index, total) {
@@ -115,14 +273,52 @@
       return index / (total - 1);
     }
 
-    tick() {
-      const duration = this.getDuration();
-      if (!duration) {
+    startFrameLoop() {
+      if (this.frameRequest || !this.video) {
         return;
       }
 
-      if (Math.abs(duration - this.lastDuration) > 1) {
-        this.rebuildTimeline();
+      this.frameRequest = window.requestAnimationFrame(() => this.frame());
+    }
+
+    frame() {
+      this.frameRequest = 0;
+      this.renderNow();
+
+      if (this.video && !this.video.paused && !this.video.ended) {
+        this.startFrameLoop();
+      }
+    }
+
+    resumePlayback() {
+      this.startFrameLoop();
+    }
+
+    handleSeek() {
+      this.renderNow();
+    }
+
+    finishAtEnd() {
+      if (this.layer && typeof this.layer.renderAt === "function") {
+        const duration = this.getDuration();
+        this.layer.renderAt((duration || this.lastDuration || 0) + END_MARGIN_SECONDS);
+      } else {
+        this.clearLayer();
+      }
+
+      this.lastRenderedItems = 0;
+      this.notifyState({ status: "ended" });
+    }
+
+    renderNow() {
+      if (!this.layer || !this.video) {
+        return;
+      }
+
+      const duration = this.getDuration();
+      if (duration && this.lastDuration && Math.abs(duration - this.lastDuration) > 1) {
+        this.handleDurationChange();
+        return;
       }
 
       const currentTime = this.getCurrentTime();
@@ -130,131 +326,11 @@
         return;
       }
 
-      if (this.lastCurrentTime === null) {
-        this.lastCurrentTime = currentTime;
-        this.syncToWindow(
-          currentTime,
-          LOAD_WINDOW_BACK_SECONDS,
-          LOAD_WINDOW_FORWARD_SECONDS,
-          MAX_EMIT_PER_WINDOW_SYNC,
-          false
-        );
-        return;
-      }
-
-      const delta = currentTime - this.lastCurrentTime;
-
-      if (Math.abs(delta) > SEEK_THRESHOLD_SECONDS) {
-        this.clearLayer();
-        this.syncToWindow(
-          currentTime,
-          SEEK_WINDOW_BACK_SECONDS,
-          SEEK_WINDOW_FORWARD_SECONDS,
-          MAX_EMIT_PER_WINDOW_SYNC,
-          true
-        );
-        this.lastCurrentTime = currentTime;
-        return;
-      }
-
-      if (this.video.paused) {
-        this.lastCurrentTime = currentTime;
-        return;
-      }
-
-      if (this.pendingWindowSync) {
-        const pending = this.pendingWindowSync;
-        this.pendingWindowSync = null;
-        this.emitDue(pending.fromTime, pending.toTime, pending.maxCount);
-      }
-
-      this.emitDue(this.lastCurrentTime - 0.15, currentTime + 0.25, MAX_EMIT_PER_TICK);
-      this.lastCurrentTime = currentTime;
-    }
-
-    emitDue(fromTime, toTime, maxCount = MAX_EMIT_PER_TICK) {
-      if (!this.layer || !this.timeline.length) {
-        return;
-      }
-
-      let emitted = 0;
-
-      for (const item of this.timeline) {
-        if (this.fired.has(item.id)) {
-          continue;
-        }
-
-        if (item.appearAt < fromTime) {
-          this.fired.add(item.id);
-          continue;
-        }
-
-        if (item.appearAt > toTime) {
-          break;
-        }
-
-        if (emitted >= maxCount) {
-          break;
-        }
-
-        this.fired.add(item.id);
-        emitted += 1;
-        this.layer.enqueue(item.text, {
-          publishedAt: item.comment.publishedAt,
-          publishedText: item.comment.publishedText,
-          appearAt: item.appearAt
-        });
-      }
-    }
-
-    syncToWindow(currentTime, backSeconds, forwardSeconds, maxCount, resetWindow) {
-      if (!isFiniteNumber(currentTime)) {
-        return;
-      }
-
-      const fromTime = Math.max(0, currentTime - backSeconds);
-      const toTime = currentTime + forwardSeconds;
-      this.markPastAsFired(fromTime);
-
-      if (resetWindow) {
-        this.resetBetween(fromTime, toTime);
-      }
-
-      if (!this.video || this.video.paused) {
-        this.pendingWindowSync = { fromTime, toTime, maxCount };
-        return;
-      }
-
-      this.pendingWindowSync = null;
-      this.emitDue(fromTime, toTime, maxCount);
-    }
-
-    markPastAsFired(currentTime) {
-      if (!isFiniteNumber(currentTime)) {
-        return;
-      }
-
-      for (const item of this.timeline) {
-        if (item.appearAt <= currentTime) {
-          this.fired.add(item.id);
-        } else {
-          break;
-        }
-      }
-    }
-
-    resetBetween(fromTime, toTime) {
-      if (!isFiniteNumber(fromTime) || !isFiniteNumber(toTime)) {
-        return;
-      }
-
-      for (const item of this.timeline) {
-        if (item.appearAt > toTime) {
-          break;
-        }
-
-        if (item.appearAt >= fromTime) {
-          this.fired.delete(item.id);
+      if (typeof this.layer.renderAt === "function") {
+        const renderedItems = this.layer.renderAt(currentTime);
+        if (renderedItems !== this.lastRenderedItems) {
+          this.lastRenderedItems = renderedItems;
+          this.notifyState({ status: "rendered" });
         }
       }
     }
@@ -262,6 +338,51 @@
     clearLayer() {
       if (this.layer && typeof this.layer.clearActive === "function") {
         this.layer.clearActive();
+      }
+    }
+
+    pauseLayer() {
+      if (this.layer && typeof this.layer.pause === "function") {
+        this.layer.pause();
+      }
+    }
+
+    resumeLayer() {
+      if (this.layer && typeof this.layer.resume === "function") {
+        this.layer.resume();
+      }
+    }
+
+    reset(reason = "reset", options = {}) {
+      window.clearTimeout(this.initialReleaseTimer);
+      if (Object.prototype.hasOwnProperty.call(options, "autoRelease")) {
+        this.autoReleaseDelay = options.autoRelease ? INITIAL_RELEASE_TIMEOUT_MS : 0;
+      }
+
+      this.comments.clear();
+      this.timeline = [];
+      this.initialReleased = false;
+      this.initialReleaseRequested = false;
+      this.initialReleaseTimer = 0;
+      this.lastRenderedItems = 0;
+      this.nextLateAppearAt = null;
+
+      if (this.layer && typeof this.layer.setTimeline === "function") {
+        this.layer.setTimeline([]);
+      } else {
+        this.clearLayer();
+      }
+
+      if (this.autoReleaseDelay > 0) {
+        this.startInitialReleaseTimer(this.autoReleaseDelay, "timeout");
+      }
+      this.renderNow();
+      this.notifyState({ status: reason });
+    }
+
+    notifyState(updates = {}) {
+      if (this.onStateChange) {
+        this.onStateChange(updates);
       }
     }
 
@@ -275,17 +396,31 @@
     }
 
     dispose() {
-      window.clearInterval(this.timer);
-      window.clearTimeout(this.buildTimer);
+      window.clearTimeout(this.initialReleaseTimer);
 
-      this.timer = 0;
-      this.buildTimer = 0;
+      if (this.frameRequest) {
+        window.cancelAnimationFrame(this.frameRequest);
+      }
+
+      if (this.video) {
+        this.video.removeEventListener("play", this.boundPlay);
+        this.video.removeEventListener("playing", this.boundPlay);
+        this.video.removeEventListener("pause", this.boundRender);
+        this.video.removeEventListener("seeking", this.boundSeek);
+        this.video.removeEventListener("seeked", this.boundRender);
+        this.video.removeEventListener("timeupdate", this.boundRender);
+        this.video.removeEventListener("ended", this.boundEnded);
+        this.video.removeEventListener("durationchange", this.boundDurationChange);
+      }
+
+      this.initialReleaseTimer = 0;
+      this.frameRequest = 0;
       this.comments.clear();
       this.timeline = [];
-      this.fired.clear();
-      this.pendingWindowSync = null;
+      this.clearLayer();
       this.layer = null;
       this.video = null;
+      this.onStateChange = null;
     }
   }
 

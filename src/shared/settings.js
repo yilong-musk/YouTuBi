@@ -5,10 +5,10 @@
     enabled: true,
     fontSize: 22,
     speed: 90,
-    opacity: 0.92,
+    opacity: 0.5,
     trackRatio: 2 / 3,
     maxOnScreen: 34,
-    preloadLimit: 200
+    preloadLimit: 500
   };
 
   const TRACK_RATIO_OPTIONS = [1, 2 / 3, 1 / 2, 1 / 3];

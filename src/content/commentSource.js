@@ -173,8 +173,9 @@
   };
 
   class CommentSource {
-    constructor({ onComment }) {
+    constructor({ onComment, videoId }) {
       this.onComment = onComment;
+      this.videoId = videoId || "";
       this.seen = new Set();
       this.root = null;
       this.observer = null;
@@ -240,6 +241,10 @@
     }
 
     scan() {
+      if (!this.isCurrentPage()) {
+        return;
+      }
+
       const nodes = Array.from(document.querySelectorAll(COMMENT_ROOT_SELECTORS.join(","))).filter(
         (node) => !node.matches("ytd-comment-renderer") || !node.closest("ytd-comment-thread-renderer")
       );
@@ -248,6 +253,10 @@
         const textNode = findFirst(node, COMMENT_TEXT_SELECTORS);
         const text = normalizeText(textNode && textNode.textContent);
         if (!text || text.length < 2) {
+          continue;
+        }
+
+        if (!this.belongsToCurrentVideo(node)) {
           continue;
         }
 
@@ -284,6 +293,37 @@
       }
 
       return `${text.slice(0, 180)}|${this.getPublishedText(node)}`;
+    }
+
+    belongsToCurrentVideo(node) {
+      if (!this.videoId) {
+        return true;
+      }
+
+      const anchors = Array.from(node.querySelectorAll("a[href]"));
+      const linkedVideoIds = anchors
+        .map((anchor) => {
+          try {
+            return new URL(anchor.getAttribute("href"), location.origin).searchParams.get("v");
+          } catch (error) {
+            return "";
+          }
+        })
+        .filter(Boolean);
+
+      return !linkedVideoIds.length || linkedVideoIds.includes(this.videoId);
+    }
+
+    isCurrentPage() {
+      if (!this.videoId) {
+        return true;
+      }
+
+      try {
+        return new URL(location.href).searchParams.get("v") === this.videoId;
+      } catch (error) {
+        return false;
+      }
     }
 
     getPublishedText(node) {

@@ -1,8 +1,8 @@
-.youtubi-player-host {
+.ytbm-player-anchor {
   position: relative !important;
 }
 
-.youtubi-layer {
+.ytbm-surface {
   position: absolute;
   inset: 0;
   z-index: 2147483000;
@@ -12,11 +12,11 @@
   font-family: Roboto, Arial, "Microsoft YaHei", sans-serif;
 }
 
-.youtubi-layer[hidden] {
+.ytbm-surface[hidden] {
   display: none !important;
 }
 
-.youtubi-item {
+.ytbm-line {
   position: absolute;
   left: 0;
   top: 0;
@@ -32,4 +32,149 @@
     1px 0 2px rgba(0, 0, 0, 0.75),
     -1px 0 2px rgba(0, 0, 0, 0.75);
   will-change: transform;
+}
+
+.ytbm-watch-toggle {
+  box-sizing: border-box;
+  appearance: none;
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  height: 36px;
+  min-width: 0;
+  padding: 0 12px 0 14px;
+  margin: 0 8px 0 0;
+  border: 0;
+  border-radius: 18px;
+  background: var(--yt-spec-badge-chip-background, rgba(0, 0, 0, 0.05));
+  color: var(--yt-spec-text-primary, #0f0f0f);
+  font-family: Roboto, Arial, "Microsoft YaHei", sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 36px;
+  letter-spacing: 0;
+  white-space: nowrap;
+  gap: 8px;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.ytbm-watch-toggle:hover {
+  background: var(--yt-spec-button-chip-background-hover, rgba(0, 0, 0, 0.1));
+}
+
+html[dark] .ytbm-watch-toggle,
+body[dark] .ytbm-watch-toggle,
+ytd-app[dark] .ytbm-watch-toggle {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f1f1f1;
+}
+
+html[dark] .ytbm-watch-toggle:hover,
+body[dark] .ytbm-watch-toggle:hover,
+ytd-app[dark] .ytbm-watch-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.ytbm-watch-toggle:focus-visible {
+  outline: 2px solid var(--yt-spec-call-to-action, #065fd4);
+  outline-offset: 2px;
+}
+
+.ytbm-watch-toggle.is-off {
+  color: var(--yt-spec-text-secondary, #606060);
+}
+
+html[dark] .ytbm-watch-toggle.is-off,
+body[dark] .ytbm-watch-toggle.is-off,
+ytd-app[dark] .ytbm-watch-toggle.is-off {
+  color: #aaa;
+}
+
+.ytbm-watch-toggle.is-floating {
+  position: fixed;
+  z-index: 2147483001;
+  margin: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: #f1f1f1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.ytbm-watch-toggle.is-floating:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.ytbm-watch-toggle.is-floating.is-off {
+  color: #aaa;
+}
+
+.ytbm-watch-toggle-label,
+.ytbm-watch-toggle-track,
+.ytbm-watch-toggle-thumb {
+  pointer-events: none;
+}
+
+.ytbm-watch-toggle-label {
+  line-height: 1;
+}
+
+.ytbm-watch-toggle-track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(15, 15, 15, 0.18);
+  box-shadow: inset 0 0 0 1px rgba(15, 15, 15, 0.08);
+  transition:
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.ytbm-watch-toggle-thumb {
+  position: absolute;
+  left: 3px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.38),
+    0 1px 2px rgba(0, 0, 0, 0.28);
+  transition: transform 140ms ease;
+}
+
+.ytbm-watch-toggle[aria-pressed="true"] .ytbm-watch-toggle-track {
+  background: rgba(15, 15, 15, 0.72);
+  box-shadow: inset 0 0 0 1px rgba(15, 15, 15, 0.24);
+}
+
+.ytbm-watch-toggle[aria-pressed="true"] .ytbm-watch-toggle-thumb {
+  transform: translateX(12px);
+  box-shadow:
+    0 0 0 1.5px rgba(0, 0, 0, 0.62),
+    0 1px 2px rgba(0, 0, 0, 0.34);
+}
+
+html[dark] .ytbm-watch-toggle-track,
+body[dark] .ytbm-watch-toggle-track,
+ytd-app[dark] .ytbm-watch-toggle-track,
+.ytbm-watch-toggle.is-floating .ytbm-watch-toggle-track {
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+html[dark] .ytbm-watch-toggle[aria-pressed="true"] .ytbm-watch-toggle-track,
+body[dark] .ytbm-watch-toggle[aria-pressed="true"] .ytbm-watch-toggle-track,
+ytd-app[dark] .ytbm-watch-toggle[aria-pressed="true"] .ytbm-watch-toggle-track,
+.ytbm-watch-toggle.is-floating[aria-pressed="true"] .ytbm-watch-toggle-track {
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
 }

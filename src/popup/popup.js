@@ -28,6 +28,10 @@ const controls = {
 
 let currentSettings = null;
 let saveTimer = 0;
+let pendingUpdates = {};
+let saveToken = 0;
+let saveChain = Promise.resolve();
+let unsubscribeSettings = () => {};
 
 const normalizeTrackRatio = (value) =>
   window.YoutubiSettings.TRACK_RATIO_OPTIONS.reduce((best, option) =>
@@ -65,41 +69,90 @@ const render = (settings) => {
   controls.preloadLimitValue.textContent = t("unitPreload", settings.preloadLimit, "$1 comments");
 };
 
-const readControls = () => ({
-  enabled: controls.enabled.checked,
-  trackRatio: normalizeTrackRatio(currentSettings.trackRatio),
-  speed: Number(controls.speed.value),
-  fontSize: Number(controls.fontSize.value),
-  opacity: Number(controls.opacity.value),
-  preloadLimit: Number(controls.preloadLimit.value)
-});
+const hasPendingUpdates = () => Object.keys(pendingUpdates).length > 0;
 
-const scheduleSave = () => {
+const persistSettings = (updates) => {
+  const request = saveChain.then(() => window.YoutubiSettings.save(updates));
+  saveChain = request.catch(() => {});
+  return request;
+};
+
+const flushSave = async () => {
   if (!currentSettings) {
     return;
   }
 
-  render({ ...currentSettings, ...readControls() });
-  window.clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(async () => {
-    const saved = await window.YoutubiSettings.save(readControls());
-    render(saved);
-  }, 80);
+  const updates = pendingUpdates;
+  pendingUpdates = {};
+
+  if (!Object.keys(updates).length) {
+    return;
+  }
+
+  const token = ++saveToken;
+  const saved = await persistSettings(updates);
+  if (token === saveToken) {
+    render({ ...saved, ...pendingUpdates });
+  }
 };
 
-window.YoutubiSettings.load().then(render);
+const scheduleSave = (updates, delay = 80) => {
+  if (!currentSettings) {
+    return;
+  }
 
-controls.enabled.addEventListener("change", scheduleSave);
+  pendingUpdates = { ...pendingUpdates, ...updates };
+  render({ ...currentSettings, ...pendingUpdates });
+  window.clearTimeout(saveTimer);
+  saveTimer = window.setTimeout(flushSave, delay);
+};
+
+const saveImmediately = (updates) => {
+  if (!currentSettings) {
+    return;
+  }
+
+  pendingUpdates = { ...pendingUpdates, ...updates };
+  render({ ...currentSettings, ...pendingUpdates });
+  window.clearTimeout(saveTimer);
+  void flushSave();
+};
+
+window.YoutubiSettings.load().then((settings) => {
+  render(settings);
+  unsubscribeSettings = window.YoutubiSettings.subscribe((nextSettings) => {
+    render(hasPendingUpdates() ? { ...nextSettings, ...pendingUpdates } : nextSettings);
+  });
+});
+
+window.addEventListener("pagehide", () => {
+  window.clearTimeout(saveTimer);
+  if (hasPendingUpdates()) {
+    void flushSave();
+  }
+  unsubscribeSettings();
+});
+
+controls.enabled.addEventListener("change", () => saveImmediately({ enabled: controls.enabled.checked }));
 controls.trackRatio.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-track-ratio]");
   if (!button || !currentSettings) {
     return;
   }
 
-  currentSettings.trackRatio = normalizeTrackRatio(Number(button.dataset.trackRatio));
-  scheduleSave();
+  saveImmediately({ trackRatio: normalizeTrackRatio(Number(button.dataset.trackRatio)) });
 });
-controls.speed.addEventListener("input", scheduleSave);
-controls.fontSize.addEventListener("input", scheduleSave);
-controls.opacity.addEventListener("input", scheduleSave);
-controls.preloadLimit.addEventListener("input", scheduleSave);
+
+const speedUpdate = () => ({ speed: Number(controls.speed.value) });
+const fontSizeUpdate = () => ({ fontSize: Number(controls.fontSize.value) });
+const opacityUpdate = () => ({ opacity: Number(controls.opacity.value) });
+const preloadLimitUpdate = () => ({ preloadLimit: Number(controls.preloadLimit.value) });
+
+controls.speed.addEventListener("input", () => scheduleSave(speedUpdate()));
+controls.speed.addEventListener("change", () => saveImmediately(speedUpdate()));
+controls.fontSize.addEventListener("input", () => scheduleSave(fontSizeUpdate()));
+controls.fontSize.addEventListener("change", () => saveImmediately(fontSizeUpdate()));
+controls.opacity.addEventListener("input", () => scheduleSave(opacityUpdate()));
+controls.opacity.addEventListener("change", () => saveImmediately(opacityUpdate()));
+controls.preloadLimit.addEventListener("input", () => scheduleSave(preloadLimitUpdate()));
+controls.preloadLimit.addEventListener("change", () => saveImmediately(preloadLimitUpdate()));

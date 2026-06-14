@@ -1,5 +1,6 @@
 (() => {
   const STORAGE_KEY = "youtubi.settings";
+  let storageUnavailable = false;
 
   const DEFAULT_SETTINGS = {
     enabled: true,
@@ -13,10 +14,22 @@
 
   const TRACK_RATIO_OPTIONS = [1, 2 / 3, 1 / 2, 1 / 3];
 
-  const hasStorage = () =>
-    typeof chrome !== "undefined" &&
-    chrome.storage &&
-    chrome.storage.sync;
+  const hasStorage = () => {
+    if (storageUnavailable) {
+      return false;
+    }
+
+    try {
+      return (
+        typeof chrome !== "undefined" &&
+        chrome.storage &&
+        chrome.storage.sync
+      );
+    } catch (error) {
+      storageUnavailable = true;
+      return false;
+    }
+  };
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -52,14 +65,19 @@
         return;
       }
 
-      chrome.storage.sync.get({ [STORAGE_KEY]: DEFAULT_SETTINGS }, (items) => {
-        if (chrome.runtime && chrome.runtime.lastError) {
-          resolve({ ...DEFAULT_SETTINGS });
-          return;
-        }
+      try {
+        chrome.storage.sync.get({ [STORAGE_KEY]: DEFAULT_SETTINGS }, (items) => {
+          if (chrome.runtime && chrome.runtime.lastError) {
+            resolve({ ...DEFAULT_SETTINGS });
+            return;
+          }
 
-        resolve(normalize(items[STORAGE_KEY]));
-      });
+          resolve(normalize(items[STORAGE_KEY]));
+        });
+      } catch (error) {
+        storageUnavailable = true;
+        resolve({ ...DEFAULT_SETTINGS });
+      }
     });
 
   const save = async (updates) => {
@@ -72,14 +90,19 @@
         return;
       }
 
-      chrome.storage.sync.set({ [STORAGE_KEY]: next }, () => {
+      try {
+        chrome.storage.sync.set({ [STORAGE_KEY]: next }, () => {
+          resolve(next);
+        });
+      } catch (error) {
+        storageUnavailable = true;
         resolve(next);
-      });
+      }
     });
   };
 
   const subscribe = (handler) => {
-    if (!hasStorage() || !chrome.storage.onChanged) {
+    if (!hasStorage()) {
       return () => {};
     }
 
@@ -91,8 +114,23 @@
       handler(normalize(changes[STORAGE_KEY].newValue));
     };
 
-    chrome.storage.onChanged.addListener(listener);
-    return () => chrome.storage.onChanged.removeListener(listener);
+    try {
+      if (!chrome.storage.onChanged) {
+        return () => {};
+      }
+
+      chrome.storage.onChanged.addListener(listener);
+      return () => {
+        try {
+          chrome.storage.onChanged.removeListener(listener);
+        } catch (error) {
+          storageUnavailable = true;
+        }
+      };
+    } catch (error) {
+      storageUnavailable = true;
+      return () => {};
+    }
   };
 
   window.YoutubiSettings = {

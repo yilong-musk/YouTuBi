@@ -185,7 +185,7 @@ jobs:
           else
             gh release create "${tag}" "${zip_path}" \
               --verify-tag \
-              --title "Youtubi ${{ steps.meta.outputs.version }}" \
+              --title "YouTuBi ${{ steps.meta.outputs.version }}" \
               --notes-file "${notes_path}"
           fi
 
@@ -206,14 +206,14 @@ jobs:
 
           oras push "${{ steps.meta.outputs.package_ref }}" \
             "${zip_path}:application/zip" \
-            --annotation "org.opencontainers.image.title=Youtubi" \
+            --annotation "org.opencontainers.image.title=YouTuBi" \
             --annotation "org.opencontainers.image.description=Chrome extension package" \
             --annotation "org.opencontainers.image.source=${source_url}" \
             --annotation "org.opencontainers.image.version=${{ steps.meta.outputs.version }}"
 
           oras push "${{ steps.meta.outputs.latest_ref }}" \
             "${zip_path}:application/zip" \
-            --annotation "org.opencontainers.image.title=Youtubi" \
+            --annotation "org.opencontainers.image.title=YouTuBi" \
             --annotation "org.opencontainers.image.description=Chrome extension package" \
             --annotation "org.opencontainers.image.source=${source_url}" \
             --annotation "org.opencontainers.image.version=${{ steps.meta.outputs.version }}"

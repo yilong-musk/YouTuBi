@@ -41,7 +41,7 @@
     },
     zh_CN: {
       extName: "Youtubi",
-      extDescription: "为 YouTube 带来更好的弹幕体验。",
+      extDescription: "打开YouTube看弹幕～",
       popupDanmaku: "弹幕",
       popupDanmakuArea: "弹幕范围",
       trackFull: "全屏",

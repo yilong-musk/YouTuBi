@@ -3,6 +3,7 @@
   const PAGE_DELAY_MS = 120;
   const CONFIG_RETRY_MS = 250;
   const CONFIG_RETRY_COUNT = 20;
+  const MAX_REPLY_COMMENTS = 50;
 
   const commentTime = window.YoutubiCommentTime || {
     normalizeText: (text) => String(text || "").replace(/\s+/g, " ").trim(),
@@ -11,6 +12,9 @@
 
   const normalizeText = commentTime.normalizeText;
   const parsePublishedAt = commentTime.parsePublishedAt;
+
+  const t = (key, substitutions, fallback) =>
+    window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
 
   const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
@@ -80,6 +84,41 @@
     }
 
     return "";
+  };
+
+  const firstUrl = (...values) => {
+    for (const value of values) {
+      if (typeof value === "string" && value) {
+        return value;
+      }
+
+      if (Array.isArray(value)) {
+        const found = firstUrl(...value);
+        if (found) {
+          return found;
+        }
+      }
+
+      if (value && typeof value === "object") {
+        const found = firstUrl(
+          value.url,
+          value.thumbnails,
+          value.sources,
+          value.image,
+          value.avatar
+        );
+        if (found) {
+          return found;
+        }
+      }
+    }
+
+    return "";
+  };
+
+  const getHandle = (text) => {
+    const match = normalizeText(text).match(/(^|\s)(@[\p{L}\p{N}_.-]+)/u);
+    return match ? match[2] : "";
   };
 
   const walk = (value, visitor) => {
@@ -221,7 +260,14 @@
 
   const getContinuationToken = (value) =>
     getNested(value, ["continuationEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["command", "continuationCommand", "token"]) ||
     getNested(value, ["button", "buttonRenderer", "command", "continuationCommand", "token"]) ||
+    getNested(value, ["button", "buttonRenderer", "serviceEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["button", "buttonRenderer", "navigationEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["buttonRenderer", "command", "continuationCommand", "token"]) ||
+    getNested(value, ["buttonRenderer", "serviceEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["buttonRenderer", "navigationEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["onTap", "innertubeCommand", "continuationCommand", "token"]) ||
     getNested(value, ["continuationCommand", "token"]) ||
     getNested(value, ["reloadContinuationData", "continuation"]) ||
     getNested(value, ["nextContinuationData", "continuation"]) ||
@@ -340,7 +386,7 @@
     return current;
   };
 
-  const parseCommentRenderer = (renderer, order) => {
+  const parseCommentRenderer = (renderer, order, extras = {}) => {
     const comment = unwrapCommentRenderer(renderer);
     if (!comment || typeof comment !== "object") {
       return null;
@@ -366,6 +412,24 @@
       comment.timeText,
       comment.timestampText
     );
+    const authorName = firstText(
+      comment.authorText,
+      comment.author,
+      comment.authorName,
+      getNested(comment, ["author", "displayName"]),
+      getNested(comment, ["properties", "authorName"]),
+      getNested(comment, ["properties", "authorButtonA11y"]),
+      getNested(comment, ["avatar", "accessibilityText"])
+    );
+    const avatarUrl = firstUrl(
+      getNested(comment, ["author", "avatarThumbnailUrl"]),
+      getNested(comment, ["avatar", "image", "sources"]),
+      getNested(comment, ["authorThumbnail", "thumbnails"]),
+      comment.avatar
+    );
+    const authorHandle = getHandle(authorName);
+    const replyToHandle = getHandle(text);
+    const replyLevel = Number(getNested(comment, ["properties", "replyLevel"]) || comment.replyLevel || 0) || 0;
 
     const id =
       comment.commentId ||
@@ -378,6 +442,11 @@
       id,
       text,
       order,
+      authorName,
+      authorHandle,
+      avatarUrl,
+      replyToHandle,
+      replyLevel,
       publishedText,
       publishedAt: parsePublishedAt([
         publishedText,
@@ -385,7 +454,8 @@
         getNested(comment, ["publishedTime", "accessibility", "accessibilityData", "label"]),
         getNested(comment, ["properties", "publishedTime", "accessibility", "accessibilityData", "label"])
       ]),
-      source: "youtubei"
+      source: "youtubei",
+      ...extras
     };
   };
 
@@ -398,9 +468,89 @@
     threadRenderer
   ].filter(Boolean);
 
+  const getThreadCommentId = (threadRenderer) =>
+    getNested(threadRenderer, ["comment", "commentRenderer", "commentId"]) ||
+    getNested(threadRenderer, ["comment", "commentViewModel", "commentId"]) ||
+    getNested(threadRenderer, ["commentViewModel", "commentViewModel", "commentId"]) ||
+    getNested(threadRenderer, ["commentViewModel", "commentId"]) ||
+    threadRenderer.commentId ||
+    "";
+
+  const getReplyRenderer = (threadRenderer) =>
+    getNested(threadRenderer, ["replies", "commentRepliesRenderer"]) ||
+    getNested(threadRenderer, ["replies", "commentRepliesViewModel"]) ||
+    getNested(threadRenderer, ["replies", "commentRepliesExpansionRenderer"]) ||
+    threadRenderer.commentRepliesRenderer ||
+    threadRenderer.commentRepliesViewModel ||
+    threadRenderer.commentRepliesExpansionRenderer ||
+    null;
+
+  const hasReplyHint = (value) => {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+
+    try {
+      return /reply|replies|comment-replies|回复|回覆|回復/i.test(JSON.stringify(value));
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const getReplyContinuationToken = (threadRenderer) => {
+    const replies = getReplyRenderer(threadRenderer);
+    const token = replies ? findContinuationToken(replies) : null;
+    if (token) {
+      return token;
+    }
+
+    return hasReplyHint(threadRenderer) ? findContinuationToken(threadRenderer) : null;
+  };
+
+  const getReplyCountText = (threadRenderer) => {
+    const replies = getReplyRenderer(threadRenderer);
+    if (!replies) {
+      return "";
+    }
+
+    return firstText(
+      replies.moreText,
+      replies.viewReplies,
+      getNested(replies, ["viewReplies", "buttonRenderer", "text"]),
+      getNested(replies, ["viewReplies", "buttonRenderer", "accessibility", "label"]),
+      getNested(replies, ["viewReplies", "buttonRenderer", "accessibilityData", "label"])
+    );
+  };
+
+  const extractReplyComments = (data, startOrder, parentId) => {
+    const comments = [];
+    const seen = new Set();
+    let order = startOrder;
+
+    walk(data, (node) => {
+      const renderer = node.commentRenderer || node.commentViewModel || node.commentEntityPayload;
+      const comment = parseCommentRenderer(renderer, order, {
+        parentId,
+        isReply: true,
+        source: "youtubei-reply"
+      });
+
+      if (comment && !seen.has(comment.id)) {
+        seen.add(comment.id);
+        comments.push(comment);
+        order += 1;
+      }
+
+      return undefined;
+    });
+
+    return comments;
+  };
+
   const extractComments = (data, startOrder) => {
     const comments = [];
     const seen = new Set();
+    const threadReplyMeta = new Map();
     let order = startOrder;
 
     walk(data, (node) => {
@@ -409,8 +559,19 @@
         return undefined;
       }
 
+      const replyContinuationToken = getReplyContinuationToken(threadRenderer);
+      const replyCountText = getReplyCountText(threadRenderer);
+      const threadCommentId = getThreadCommentId(threadRenderer);
+      const replyMeta = {
+        replyContinuationToken,
+        replyCountText,
+        hasReplies: Boolean(replyContinuationToken)
+      };
+      if (threadCommentId && (replyContinuationToken || replyCountText)) {
+        threadReplyMeta.set(threadCommentId, replyMeta);
+      }
       const comment = getThreadCommentCandidates(threadRenderer)
-        .map((candidate) => parseCommentRenderer(candidate, order))
+        .map((candidate) => parseCommentRenderer(candidate, order, replyMeta))
         .find(Boolean);
 
       if (comment && !seen.has(comment.id)) {
@@ -431,6 +592,11 @@
       const comment = parseCommentRenderer(renderer, order);
 
       if (comment && !seen.has(comment.id)) {
+        const replyMeta = threadReplyMeta.get(comment.id);
+        if (replyMeta) {
+          Object.assign(comment, replyMeta);
+        }
+
         seen.add(comment.id);
         comments.push(comment);
         order += 1;
@@ -451,9 +617,13 @@
       this.abortController = null;
       this.disposed = false;
       this.started = false;
+      this.config = null;
       this.loadedCount = 0;
       this.order = 0;
+      this.replyOrder = 0;
       this.seen = new Set();
+      this.replyCache = new Map();
+      this.replyInflight = new Map();
       this.fetchLog = {
         responseCount: 0,
         comments: [],
@@ -490,6 +660,7 @@
           return;
         }
 
+        this.config = config;
         this.abortController = new AbortController();
         this.reportStatus("ready", {
           videoId: this.videoId,
@@ -580,17 +751,19 @@
       }
 
       const reasonNames = {
-        done: "全部加载完成",
-        "max-comments": "达到评论上限",
-        "continuation-missing": "未找到评论续页"
+        done: t("logReasonDone", null, "All loaded"),
+        "max-comments": t("logReasonMaxComments", null, "Comment limit reached"),
+        "continuation-missing": t("logReasonContinuationMissing", null, "Comment continuation not found")
       };
       const comments = this.fetchLog.comments;
+      const replyEntryCount = comments.filter((comment) => comment && comment.replyContinuationToken).length;
 
-      console.info("[Youtubi] 评论加载完成", {
-        结束原因: reasonNames[reason] || reason,
+      console.info(t("logCommentsLoaded", null, "[Youtubi] Comments loaded"), {
+        [t("logReason", null, "Reason")]: reasonNames[reason] || reason,
         videoId: this.videoId,
-        评论数: comments.length,
-        评论数据: comments
+        [t("logCommentCount", null, "Comment count")]: comments.length,
+        [t("logReplyEntryCount", null, "Comments with reply entry")]: replyEntryCount,
+        [t("logCommentData", null, "Comment data")]: comments
       });
     }
 
@@ -689,6 +862,100 @@
       return result;
     }
 
+    async loadReplies(comment, options = {}) {
+      const continuation = comment && comment.replyContinuationToken;
+      if (!continuation || this.disposed || !this.isCurrentPage()) {
+        return {
+          status: "unavailable",
+          parentId: comment && comment.id,
+          replies: []
+        };
+      }
+
+      const cacheKey = comment.id || continuation;
+      if (this.replyCache.has(cacheKey)) {
+        return this.replyCache.get(cacheKey);
+      }
+
+      if (this.replyInflight.has(cacheKey)) {
+        return this.replyInflight.get(cacheKey);
+      }
+
+      const request = this.fetchReplyPages(comment, continuation, options)
+        .then((result) => {
+          this.replyCache.set(cacheKey, result);
+          return result;
+        })
+        .finally(() => {
+          this.replyInflight.delete(cacheKey);
+        });
+
+      this.replyInflight.set(cacheKey, request);
+      return request;
+    }
+
+    async fetchReplyPages(comment, firstContinuation, options = {}) {
+      const config = this.config || await this.waitForConfig();
+      if (!config || !config.apiKey || !config.context) {
+        throw new Error("youtubei reply config missing");
+      }
+
+      this.config = config;
+      if (!this.abortController) {
+        this.abortController = new AbortController();
+      }
+
+      const maxReplies = Math.min(
+        MAX_REPLY_COMMENTS,
+        Math.max(1, Number(options.maxReplies) || MAX_REPLY_COMMENTS)
+      );
+      const replies = [];
+      const seen = new Set();
+      const seenContinuations = new Set();
+      let continuation = firstContinuation;
+
+      while (!this.disposed && continuation && replies.length < maxReplies) {
+        if (seenContinuations.has(continuation)) {
+          break;
+        }
+        seenContinuations.add(continuation);
+
+        const response = await this.fetchNext(config, { continuation });
+        if (this.disposed || !response || !this.isCurrentPage()) {
+          break;
+        }
+
+        const extractedReplies = extractReplyComments(response, this.replyOrder, comment.id);
+        for (const reply of extractedReplies) {
+          if (replies.length >= maxReplies) {
+            break;
+          }
+
+          if (seen.has(reply.id)) {
+            continue;
+          }
+
+          seen.add(reply.id);
+          replies.push(reply);
+          this.replyOrder += 1;
+        }
+
+        continuation = findNextContinuation(response);
+        if (continuation && replies.length < maxReplies) {
+          await sleep(PAGE_DELAY_MS);
+        }
+      }
+
+      return {
+        status: "done",
+        parentId: comment.id,
+        replyCountText: comment.replyCountText || "",
+        replies,
+        loadedCount: replies.length,
+        hasMore: Boolean(continuation && replies.length >= maxReplies)
+      };
+    }
+
     dispose() {
       this.disposed = true;
 
@@ -699,7 +966,10 @@
       this.abortController = null;
       this.onComment = null;
       this.onStatus = null;
+      this.config = null;
       this.seen.clear();
+      this.replyCache.clear();
+      this.replyInflight.clear();
     }
   }
 

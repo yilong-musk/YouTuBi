@@ -8,6 +8,8 @@
   const MAX_TRAVEL_SECONDS = 22;
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+  const t = (key, substitutions, fallback) =>
+    window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
 
   const cleanText = (text) =>
     String(text || "")
@@ -22,10 +24,13 @@
       this.playerElement = playerElement;
       this.settings = { ...DEFAULTS, ...settings };
       this.onTimingChange = options.onTimingChange || null;
+      this.onReplyRequest = options.onReplyRequest || null;
       this.host = null;
       this.hostObserver = null;
       this.resizeObserver = null;
       this.nodes = new Map();
+      this.pauseStates = new Map();
+      this.replyStates = new Map();
       this.timeline = [];
       this.layoutItems = [];
       this.measureCanvas = document.createElement("canvas");
@@ -121,6 +126,8 @@
 
     setTimeline(timeline) {
       this.timeline = Array.isArray(timeline) ? timeline.slice() : [];
+      this.prunePauseStates();
+      this.pruneReplyStates();
       this.rebuildLayout();
       this.renderAt(this.lastCurrentTime);
     }
@@ -276,7 +283,7 @@
           break;
         }
 
-        const age = this.lastCurrentTime - item.appearAt;
+        const age = this.getEffectiveAge(item, this.lastCurrentTime);
         if (age < 0 || age > item.duration) {
           continue;
         }
@@ -294,10 +301,25 @@
         if (!activeIds.has(id)) {
           node.remove();
           this.nodes.delete(id);
+          this.pauseStates.delete(id);
         }
       }
 
       return activeCount;
+    }
+
+    getEffectiveAge(item, currentTime) {
+      const rawAge = currentTime - item.appearAt;
+      const state = this.pauseStates.get(item.id);
+      if (!state) {
+        return rawAge;
+      }
+
+      if (state.paused) {
+        return state.pausedAge;
+      }
+
+      return rawAge - state.totalPausedSeconds;
     }
 
     renderItem(item, age) {
@@ -307,17 +329,315 @@
         node = document.createElement("div");
         node.className = ITEM_CLASS;
         node.textContent = item.text;
+        node.dataset.ytbmItemId = item.id;
+        node.addEventListener("pointerenter", () => this.pauseItem(item.id));
+        node.addEventListener("pointerleave", () => this.resumeItem(item.id));
         this.host.appendChild(node);
         this.nodes.set(item.id, node);
       }
 
       const progress = clamp(age / item.duration, 0, 1);
       const x = item.startX - progress * item.distance;
+      const hasReplies = Boolean(item.comment && (item.comment.replyContinuationToken || item.comment.hasReplies));
 
+      node.classList.toggle("has-replies", hasReplies);
       node.style.fontSize = `${this.settings.fontSize}px`;
       node.style.opacity = `${this.settings.opacity}`;
       node.style.top = `${item.track * this.trackHeight}px`;
       node.style.transform = `translate3d(${x}px, 0, 0)`;
+    }
+
+    pauseItem(id) {
+      const item = this.findLayoutItem(id);
+      if (!item || !this.settings.enabled) {
+        return;
+      }
+
+      const state = this.getPauseState(id);
+      if (state.paused) {
+        return;
+      }
+
+      const pausedAge = clamp(this.getEffectiveAge(item, this.lastCurrentTime), 0, item.duration);
+      state.paused = true;
+      state.pausedAt = this.lastCurrentTime;
+      state.pausedAge = pausedAge;
+
+      const node = this.nodes.get(id);
+      if (node) {
+        node.classList.add("is-hover-paused");
+      }
+
+      this.renderItem(item, state.pausedAge);
+      this.expandReplies(item);
+    }
+
+    resumeItem(id) {
+      const state = this.pauseStates.get(id);
+      if (!state || !state.paused) {
+        return;
+      }
+
+      this.hideReplies(id);
+      state.totalPausedSeconds += Math.max(0, this.lastCurrentTime - state.pausedAt);
+      state.paused = false;
+      state.pausedAt = 0;
+
+      const node = this.nodes.get(id);
+      if (node) {
+        node.classList.remove("is-hover-paused");
+      }
+
+      this.renderAt(this.lastCurrentTime);
+    }
+
+    getPauseState(id) {
+      let state = this.pauseStates.get(id);
+      if (!state) {
+        state = {
+          totalPausedSeconds: 0,
+          paused: false,
+          pausedAt: 0,
+          pausedAge: 0
+        };
+        this.pauseStates.set(id, state);
+      }
+
+      return state;
+    }
+
+    findLayoutItem(id) {
+      return this.layoutItems.find((item) => item.id === id) || null;
+    }
+
+    prunePauseStates() {
+      if (!this.pauseStates.size) {
+        return;
+      }
+
+      const timelineIds = new Set(this.timeline.map((item) => item.id));
+      for (const id of this.pauseStates.keys()) {
+        if (!timelineIds.has(id)) {
+          this.pauseStates.delete(id);
+        }
+      }
+    }
+
+    hasReplyList(item) {
+      return Boolean(item && item.comment && item.comment.replyContinuationToken && this.onReplyRequest);
+    }
+
+    expandReplies(item) {
+      if (!this.hasReplyList(item)) {
+        return;
+      }
+
+      const state = this.getReplyState(item.id);
+      state.expanded = true;
+
+      if (state.status === "done" || state.status === "failed") {
+        this.renderReplyPanel(item, state);
+        return;
+      }
+
+      state.status = "loading";
+      this.renderReplyPanel(item, state);
+
+      if (state.request) {
+        return;
+      }
+
+      state.request = Promise.resolve(this.onReplyRequest(item.comment))
+        .then((result) => {
+          state.request = null;
+          if (result && result.status === "failed") {
+            state.status = "failed";
+            state.message = result.message || "";
+            if (state.expanded && this.isItemPaused(item.id)) {
+              this.renderReplyPanel(item, state);
+            }
+            return;
+          }
+
+          state.status = "done";
+          state.replies = Array.isArray(result && result.replies) ? result.replies : [];
+          state.hasMore = Boolean(result && result.hasMore);
+          state.replyCountText = result && result.replyCountText ? result.replyCountText : item.comment.replyCountText || "";
+
+          if (state.expanded && this.isItemPaused(item.id)) {
+            this.renderReplyPanel(item, state);
+          }
+        })
+        .catch((error) => {
+          state.request = null;
+          state.status = "failed";
+          state.message = error && error.message ? error.message : String(error || "failed");
+
+          if (state.expanded && this.isItemPaused(item.id)) {
+            this.renderReplyPanel(item, state);
+          }
+        });
+    }
+
+    hideReplies(id) {
+      const state = this.replyStates.get(id);
+      if (state) {
+        state.expanded = false;
+      }
+
+      const node = this.nodes.get(id);
+      const panel = node && node.querySelector(".ytbm-replies");
+      if (panel) {
+        panel.remove();
+      }
+    }
+
+    renderReplyPanel(item, state) {
+      const node = this.nodes.get(item.id);
+      if (!node || !state.expanded) {
+        return;
+      }
+
+      const panel = this.ensureReplyPanel(node);
+      const children = [];
+
+      if (state.status === "loading") {
+        children.push(this.createReplyStatus(t("replyLoading", null, "Loading replies...")));
+      } else if (state.status === "failed") {
+        children.push(this.createReplyStatus(t("replyFailed", null, "Failed to load replies")));
+      } else if (!state.replies.length) {
+        children.push(this.createReplyStatus(t("replyEmpty", null, "No replies")));
+      } else {
+        const headerText = state.replyCountText || t("replyCount", state.replies.length, "$1 replies");
+        const header = document.createElement("div");
+        header.className = "ytbm-replies-header";
+        header.textContent = headerText;
+        children.push(header);
+
+        const thread = document.createElement("div");
+        thread.className = "ytbm-reply-thread";
+
+        state.replies.forEach((reply, index) => {
+          thread.appendChild(this.createThreadNode(reply, {
+            className: this.getReplyDepthClass(reply, state.replies, index, item.comment)
+          }));
+        });
+        children.push(thread);
+
+        if (state.hasMore) {
+          children.push(this.createReplyStatus(t("replyMore", null, "More replies available")));
+        }
+      }
+
+      panel.replaceChildren(...children);
+    }
+
+    ensureReplyPanel(node) {
+      let panel = node.querySelector(".ytbm-replies");
+      if (!panel) {
+        panel = document.createElement("div");
+        panel.className = "ytbm-replies";
+        node.appendChild(panel);
+      }
+
+      return panel;
+    }
+
+    createThreadNode(comment, options = {}) {
+      const node = document.createElement("div");
+      node.className = ["ytbm-thread-node", options.className].filter(Boolean).join(" ");
+
+      const content = document.createElement("div");
+      content.className = "ytbm-thread-text";
+      const authorLabel = this.getAuthorLabel(comment);
+      if (authorLabel) {
+        const author = document.createElement("span");
+        author.className = "ytbm-thread-author";
+        author.textContent = authorLabel;
+        content.append(author, document.createTextNode(": "));
+      }
+      this.appendTextWithMention(content, comment.text, comment.replyToHandle);
+
+      node.append(content);
+
+      return node;
+    }
+
+    getAuthorLabel(comment) {
+      return cleanText(comment.authorHandle || comment.authorName);
+    }
+
+    appendTextWithMention(node, text, mention) {
+      const normalized = cleanText(text);
+      if (!mention || !normalized.startsWith(mention)) {
+        node.append(document.createTextNode(normalized));
+        return;
+      }
+
+      const mentionNode = document.createElement("span");
+      mentionNode.className = "ytbm-thread-mention";
+      mentionNode.textContent = mention;
+
+      node.append(mentionNode, document.createTextNode(normalized.slice(mention.length)));
+    }
+
+    getReplyDepthClass(reply, replies, index, parentComment) {
+      const replyTo = this.normalizeHandle(reply.replyToHandle);
+      const parentHandle = this.normalizeHandle(parentComment.authorHandle || parentComment.authorName);
+      const referencesPeer = replyTo && replyTo !== parentHandle && replies
+        .slice(0, index)
+        .some((candidate) => this.normalizeHandle(candidate.authorHandle || candidate.authorName) === replyTo);
+
+      return referencesPeer ? "is-nested" : "";
+    }
+
+    normalizeHandle(value) {
+      const text = String(value || "").trim().toLowerCase();
+      const match = text.match(/@[\p{L}\p{N}_.-]+/u);
+      return match ? match[0] : text;
+    }
+
+    createReplyStatus(text) {
+      const node = document.createElement("div");
+      node.className = "ytbm-replies-status";
+      node.textContent = text;
+      return node;
+    }
+
+    getReplyState(id) {
+      let state = this.replyStates.get(id);
+      if (!state) {
+        state = {
+          status: "idle",
+          expanded: false,
+          request: null,
+          replies: [],
+          hasMore: false,
+          replyCountText: "",
+          message: ""
+        };
+        this.replyStates.set(id, state);
+      }
+
+      return state;
+    }
+
+    isItemPaused(id) {
+      const state = this.pauseStates.get(id);
+      return Boolean(state && state.paused);
+    }
+
+    pruneReplyStates() {
+      if (!this.replyStates.size) {
+        return;
+      }
+
+      const timelineIds = new Set(this.timeline.map((item) => item.id));
+      for (const id of this.replyStates.keys()) {
+        if (!timelineIds.has(id)) {
+          this.replyStates.delete(id);
+        }
+      }
     }
 
     pause() {
@@ -328,12 +648,28 @@
       this.renderAt(this.lastCurrentTime);
     }
 
+    clearHoverPauses() {
+      this.pauseStates.clear();
+      for (const state of this.replyStates.values()) {
+        state.expanded = false;
+      }
+      for (const node of this.nodes.values()) {
+        node.classList.remove("is-hover-paused");
+        const panel = node.querySelector(".ytbm-replies");
+        if (panel) {
+          panel.remove();
+        }
+      }
+    }
+
     clearActive() {
       for (const node of this.nodes.values()) {
         node.remove();
       }
 
       this.nodes.clear();
+      this.pauseStates.clear();
+      this.replyStates.clear();
     }
 
     dispose() {
@@ -356,8 +692,11 @@
       this.resizeObserver = null;
       this.playerElement = null;
       this.onTimingChange = null;
+      this.onReplyRequest = null;
       this.timeline = [];
       this.layoutItems = [];
+      this.pauseStates.clear();
+      this.replyStates.clear();
       this.metricsCache.clear();
     }
   }

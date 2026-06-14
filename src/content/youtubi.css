@@ -31,7 +31,96 @@
     0 1px 2px rgba(0, 0, 0, 0.9),
     1px 0 2px rgba(0, 0, 0, 0.75),
     -1px 0 2px rgba(0, 0, 0, 0.75);
+  pointer-events: auto;
   will-change: transform;
+}
+
+.ytbm-line.is-hover-paused {
+  z-index: 3;
+}
+
+.ytbm-line.has-replies::before {
+  content: "*";
+  display: inline-block;
+  margin-right: 5px;
+  color: rgba(255, 255, 255, 0.95);
+  font-weight: 700;
+}
+
+.ytbm-replies {
+  position: absolute;
+  left: 0;
+  top: calc(100% + 8px);
+  box-sizing: border-box;
+  min-width: 260px;
+  max-width: min(420px, 70vw);
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(15, 15, 15, 0.88);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+  text-shadow: none;
+  white-space: normal;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
+}
+
+.ytbm-replies-header {
+  margin: 0 0 6px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 12px;
+}
+
+.ytbm-reply-thread {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding-left: 0;
+}
+
+.ytbm-thread-node {
+  position: relative;
+  padding-left: 0;
+}
+
+.ytbm-thread-node.is-nested {
+  margin-left: 36px;
+  padding-left: 22px;
+}
+
+.ytbm-thread-node.is-nested::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -8px;
+  width: 16px;
+  height: calc(0.675em + 8px);
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0 0 0 10px;
+}
+
+.ytbm-thread-text {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.ytbm-thread-author {
+  color: rgba(255, 255, 255, 0.96);
+  font-weight: 700;
+}
+
+.ytbm-thread-mention {
+  color: #3ea6ff;
+  font-weight: 700;
+}
+
+.ytbm-replies-status {
+  color: rgba(255, 255, 255, 0.72);
 }
 
 .ytbm-watch-toggle {

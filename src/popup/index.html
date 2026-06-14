@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -14,41 +14,42 @@
       </header>
 
       <label class="switch-row">
-        <span>&#24377;&#24149;</span>
+        <span data-i18n="popupDanmaku">Danmaku</span>
         <input id="enabled" type="checkbox">
       </label>
 
       <section class="field">
-        <span>&#24377;&#24149;&#33539;&#22260; <strong id="trackRatioValue"></strong></span>
-        <div id="trackRatio" class="segmented" role="radiogroup" aria-label="Danmaku area">
-          <button type="button" data-track-ratio="1">&#20840;&#23631;</button>
-          <button type="button" data-track-ratio="0.6666666667">2/3&#23631;</button>
-          <button type="button" data-track-ratio="0.5">&#21322;&#23631;</button>
-          <button type="button" data-track-ratio="0.3333333333">1/3&#23631;</button>
+        <span><span data-i18n="popupDanmakuArea">Danmaku area</span> <strong id="trackRatioValue"></strong></span>
+        <div id="trackRatio" class="segmented" role="radiogroup" aria-label="Danmaku area" data-i18n-aria-label="popupDanmakuArea">
+          <button type="button" data-track-ratio="1" data-i18n="trackFull">Full</button>
+          <button type="button" data-track-ratio="0.6666666667" data-i18n="trackTwoThirds">2/3</button>
+          <button type="button" data-track-ratio="0.5" data-i18n="trackHalf">Half</button>
+          <button type="button" data-track-ratio="0.3333333333" data-i18n="trackOneThird">1/3</button>
         </div>
       </section>
 
       <label class="field">
-        <span>&#36895;&#24230; <strong id="speedValue"></strong></span>
+        <span><span data-i18n="popupSpeed">Speed</span> <strong id="speedValue"></strong></span>
         <input id="speed" type="range" min="40" max="180" step="5">
       </label>
 
       <label class="field">
-        <span>&#23383;&#21495; <strong id="fontSizeValue"></strong></span>
+        <span><span data-i18n="popupFontSize">Font size</span> <strong id="fontSizeValue"></strong></span>
         <input id="fontSize" type="range" min="14" max="42" step="1">
       </label>
 
       <label class="field">
-        <span>&#36879;&#26126;&#24230; <strong id="opacityValue"></strong></span>
+        <span><span data-i18n="popupOpacity">Opacity</span> <strong id="opacityValue"></strong></span>
         <input id="opacity" type="range" min="0.25" max="1" step="0.05">
       </label>
 
       <label class="field">
-        <span>&#39044;&#21152;&#36733; <strong id="preloadLimitValue"></strong></span>
+        <span><span data-i18n="popupPreload">Preload</span> <strong id="preloadLimitValue"></strong></span>
         <input id="preloadLimit" type="range" min="50" max="800" step="50">
       </label>
     </main>
 
+    <script src="../shared/i18n.js"></script>
     <script src="../shared/settings.js"></script>
     <script src="./popup.js"></script>
   </body>

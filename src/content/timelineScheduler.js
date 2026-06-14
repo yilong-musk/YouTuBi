@@ -301,6 +301,9 @@
     finishAtEnd() {
       if (this.layer && typeof this.layer.renderAt === "function") {
         const duration = this.getDuration();
+        if (typeof this.layer.clearHoverPauses === "function") {
+          this.layer.clearHoverPauses();
+        }
         this.layer.renderAt((duration || this.lastDuration || 0) + END_MARGIN_SECONDS);
       } else {
         this.clearLayer();

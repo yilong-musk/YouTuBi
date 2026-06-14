@@ -1,19 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "Youtubi",
+  "name": "__MSG_extName__",
   "version": "0.2.0",
-  "description": "Turn YouTube comments into danmaku overlays.",
+  "default_locale": "en",
+  "description": "__MSG_extDescription__",
   "permissions": ["storage"],
   "host_permissions": ["https://www.youtube.com/*", "https://youtube.com/*"],
   "action": {
-    "default_title": "Youtubi",
+    "default_title": "__MSG_extName__",
     "default_popup": "src/popup/index.html"
   },
   "content_scripts": [
     {
-      "matches": ["https://www.youtube.com/watch*", "https://youtube.com/watch*"],
+      "matches": ["https://www.youtube.com/*", "https://youtube.com/*"],
       "css": ["src/content/youtubi.css"],
       "js": [
+        "src/shared/i18n.js",
         "src/shared/settings.js",
         "src/content/danmakuLayer.js",
         "src/content/commentSource.js",

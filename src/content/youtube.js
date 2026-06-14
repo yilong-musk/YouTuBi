@@ -34,6 +34,9 @@
     "button[aria-label*='喜歡']"
   ];
 
+  const t = (key, substitutions, fallback) =>
+    window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
+
   class YoutubiApp {
     constructor() {
       this.settings = window.YoutubiSettings.DEFAULT_SETTINGS;
@@ -70,13 +73,18 @@
     }
 
     installRouteWatchers() {
+      window.addEventListener("yt-navigate-start", this.boundRouteChanged);
+      window.addEventListener("yt-navigate", this.boundRouteChanged);
       window.addEventListener("yt-navigate-finish", this.boundRouteChanged);
       window.addEventListener("yt-page-data-updated", this.boundRouteChanged);
+      window.addEventListener("yt-page-type-changed", this.boundRouteChanged);
       window.addEventListener("popstate", this.boundRouteChanged);
 
       this.routeTimer = window.setInterval(() => {
         if (this.lastUrl !== location.href) {
           this.scheduleRebuild(250);
+        } else if (this.shouldRecoverWatchPage()) {
+          this.scheduleRebuild(0);
         } else if (this.activeVideoId) {
           if (this.toggleButton && this.toggleButton.classList.contains("is-floating")) {
             this.scheduleToggleVisibilityCheck();
@@ -85,6 +93,37 @@
           }
         }
       }, 1000);
+    }
+
+    shouldRecoverWatchPage() {
+      if (location.pathname !== "/watch") {
+        return false;
+      }
+
+      const videoId = this.getVideoId();
+      if (!videoId) {
+        return false;
+      }
+
+      if (!this.activeVideoId || videoId !== this.activeVideoId || !this.layer || !this.timelineScheduler) {
+        return true;
+      }
+
+      if (!this.layer.host || !this.layer.host.isConnected) {
+        return true;
+      }
+
+      if (!this.layer.playerElement || !this.layer.playerElement.isConnected) {
+        return true;
+      }
+
+      const player = this.findPlayer();
+      if (player && player !== this.layer.playerElement) {
+        return true;
+      }
+
+      const video = player && this.findVideo(player);
+      return Boolean(video && this.timelineScheduler.video && video !== this.timelineScheduler.video);
     }
 
     scheduleRebuild(delay) {
@@ -114,7 +153,15 @@
         return;
       }
 
-      if (this.layer && this.layer.playerElement === player && this.lastUrl === currentUrl) {
+      if (
+        this.layer &&
+        this.timelineScheduler &&
+        this.layer.host &&
+        this.layer.host.isConnected &&
+        this.layer.playerElement === player &&
+        this.timelineScheduler.video === video &&
+        this.lastUrl === currentUrl
+      ) {
         return;
       }
 
@@ -129,6 +176,13 @@
           if (this.timelineScheduler) {
             this.timelineScheduler.handleLayoutTimingChange(event.reason);
           }
+        },
+        onReplyRequest: (comment) => {
+          if (!this.isCurrentVideo(videoId)) {
+            return Promise.resolve({ status: "stale", replies: [] });
+          }
+
+          return this.loadRepliesForComment(videoId, comment);
         }
       });
       this.timelineScheduler = new window.YoutubiTimelineScheduler({
@@ -355,11 +409,11 @@
       this.toggleButton = document.createElement("button");
       this.toggleButton.type = "button";
       this.toggleButton.className = "ytbm-watch-toggle";
-      this.toggleButton.setAttribute("aria-label", "切换弹幕");
+      this.toggleButton.setAttribute("aria-label", t("watchToggleAria", null, "Toggle danmaku"));
 
       this.toggleButtonLabel = document.createElement("span");
       this.toggleButtonLabel.className = "ytbm-watch-toggle-label";
-      this.toggleButtonLabel.textContent = "弹幕";
+      this.toggleButtonLabel.textContent = t("watchToggleLabel", null, "Danmaku");
 
       const toggleTrack = document.createElement("span");
       toggleTrack.className = "ytbm-watch-toggle-track";
@@ -413,7 +467,9 @@
       this.toggleButton.classList.toggle("is-off", !enabled);
       this.toggleButton.classList.toggle("is-on", enabled);
       this.toggleButton.setAttribute("aria-pressed", String(enabled));
-      this.toggleButton.title = enabled ? "关闭弹幕" : "开启弹幕";
+      this.toggleButton.title = enabled
+        ? t("watchToggleOffTitle", null, "Turn off danmaku")
+        : t("watchToggleOnTitle", null, "Turn on danmaku");
     }
 
     scheduleToggleVisibilityCheck() {
@@ -555,6 +611,35 @@
         status.status === "config-missing" ||
         (status.status === "continuation-missing" && !status.loadedCount)
       );
+    }
+
+    async loadRepliesForComment(videoId, comment) {
+      if (!this.isCurrentVideo(videoId) || !comment || !comment.replyContinuationToken) {
+        return { status: "unavailable", replies: [] };
+      }
+
+      if (!this.apiCommentSource || typeof this.apiCommentSource.loadReplies !== "function") {
+        return { status: "unavailable", replies: [] };
+      }
+
+      try {
+        const result = await this.apiCommentSource.loadReplies(comment);
+        if (!this.isCurrentVideo(videoId)) {
+          return { status: "stale", replies: [] };
+        }
+
+        return result;
+      } catch (error) {
+        if (this.isCurrentVideo(videoId)) {
+          console.info(t("logReplyCommentsFailed", null, "[Youtubi] Reply comments failed"), error);
+        }
+
+        return {
+          status: "failed",
+          message: error && error.message ? error.message : String(error),
+          replies: []
+        };
+      }
     }
 
     startDomFallback(videoId, reason) {
@@ -705,8 +790,11 @@
     dispose() {
       window.clearInterval(this.routeTimer);
       window.clearTimeout(this.retryTimer);
+      window.removeEventListener("yt-navigate-start", this.boundRouteChanged);
+      window.removeEventListener("yt-navigate", this.boundRouteChanged);
       window.removeEventListener("yt-navigate-finish", this.boundRouteChanged);
       window.removeEventListener("yt-page-data-updated", this.boundRouteChanged);
+      window.removeEventListener("yt-page-type-changed", this.boundRouteChanged);
       window.removeEventListener("popstate", this.boundRouteChanged);
 
       if (this.unsubscribeSettings) {

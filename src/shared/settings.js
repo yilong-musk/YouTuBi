@@ -5,7 +5,7 @@
     enabled: true,
     fontSize: 22,
     speed: 90,
-    opacity: 0.5,
+    opacity: 0.7,
     trackRatio: 2 / 3,
     maxOnScreen: 34,
     preloadLimit: 500

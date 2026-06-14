@@ -1,0 +1,108 @@
+{
+  "extName": {
+    "message": "Youtubi",
+    "description": "扩展名称。"
+  },
+  "extDescription": {
+    "message": "把 YouTube 评论转换成弹幕覆盖层。",
+    "description": "扩展描述。"
+  },
+  "popupDanmaku": {
+    "message": "弹幕",
+    "description": "弹幕开关设置标签。"
+  },
+  "popupDanmakuArea": {
+    "message": "弹幕范围",
+    "description": "弹幕显示区域设置标签。"
+  },
+  "trackFull": {
+    "message": "全屏"
+  },
+  "trackTwoThirds": {
+    "message": "2/3屏"
+  },
+  "trackHalf": {
+    "message": "半屏"
+  },
+  "trackOneThird": {
+    "message": "1/3屏"
+  },
+  "popupSpeed": {
+    "message": "速度"
+  },
+  "popupFontSize": {
+    "message": "字号"
+  },
+  "popupOpacity": {
+    "message": "透明度"
+  },
+  "popupPreload": {
+    "message": "预加载"
+  },
+  "unitSpeed": {
+    "message": "$1 px/s"
+  },
+  "unitFontSize": {
+    "message": "$1 px"
+  },
+  "unitOpacity": {
+    "message": "$1%"
+  },
+  "unitPreload": {
+    "message": "$1 条"
+  },
+  "watchToggleAria": {
+    "message": "切换弹幕"
+  },
+  "watchToggleLabel": {
+    "message": "弹幕"
+  },
+  "watchToggleOffTitle": {
+    "message": "关闭弹幕"
+  },
+  "watchToggleOnTitle": {
+    "message": "开启弹幕"
+  },
+  "replyLoading": {
+    "message": "加载回复..."
+  },
+  "replyFailed": {
+    "message": "回复加载失败"
+  },
+  "replyEmpty": {
+    "message": "暂无回复"
+  },
+  "replyCount": {
+    "message": "$1 条回复"
+  },
+  "replyMore": {
+    "message": "还有更多回复"
+  },
+  "logCommentsLoaded": {
+    "message": "[Youtubi] 评论加载完成"
+  },
+  "logReason": {
+    "message": "结束原因"
+  },
+  "logCommentCount": {
+    "message": "评论数"
+  },
+  "logReplyEntryCount": {
+    "message": "带回复入口评论数"
+  },
+  "logCommentData": {
+    "message": "评论数据"
+  },
+  "logReasonDone": {
+    "message": "全部加载完成"
+  },
+  "logReasonMaxComments": {
+    "message": "达到评论上限"
+  },
+  "logReasonContinuationMissing": {
+    "message": "未找到评论续页"
+  },
+  "logReplyCommentsFailed": {
+    "message": "[Youtubi] 回复评论加载失败"
+  }
+}

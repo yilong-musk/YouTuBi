@@ -1,8 +1,15 @@
+const t = (key, substitutions, fallback) =>
+  window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
+
+if (window.YoutubiI18n) {
+  window.YoutubiI18n.localizeDocument();
+}
+
 const TRACK_RATIO_LABELS = new Map([
-  [1, "\u5168\u5c4f"],
-  [2 / 3, "2/3\u5c4f"],
-  [1 / 2, "\u534a\u5c4f"],
-  [1 / 3, "1/3\u5c4f"]
+  [1, ["trackFull", "Full"]],
+  [2 / 3, ["trackTwoThirds", "2/3"]],
+  [1 / 2, ["trackHalf", "Half"]],
+  [1 / 3, ["trackOneThird", "1/3"]]
 ]);
 
 const controls = {
@@ -27,7 +34,10 @@ const normalizeTrackRatio = (value) =>
     Math.abs(option - value) < Math.abs(best - value) ? option : best
   );
 
-const getTrackRatioLabel = (value) => TRACK_RATIO_LABELS.get(normalizeTrackRatio(value)) || "2/3\u5c4f";
+const getTrackRatioLabel = (value) => {
+  const [key, fallback] = TRACK_RATIO_LABELS.get(normalizeTrackRatio(value)) || TRACK_RATIO_LABELS.get(2 / 3);
+  return t(key, null, fallback);
+};
 
 const renderTrackRatio = (value) => {
   const normalized = normalizeTrackRatio(value);
@@ -49,10 +59,10 @@ const render = (settings) => {
   controls.opacity.value = settings.opacity;
   controls.preloadLimit.value = settings.preloadLimit;
   renderTrackRatio(settings.trackRatio);
-  controls.speedValue.textContent = `${settings.speed}px/s`;
-  controls.fontSizeValue.textContent = `${settings.fontSize}px`;
-  controls.opacityValue.textContent = `${Math.round(settings.opacity * 100)}%`;
-  controls.preloadLimitValue.textContent = `${settings.preloadLimit} \u6761`;
+  controls.speedValue.textContent = t("unitSpeed", settings.speed, "$1 px/s");
+  controls.fontSizeValue.textContent = t("unitFontSize", settings.fontSize, "$1 px");
+  controls.opacityValue.textContent = t("unitOpacity", Math.round(settings.opacity * 100), "$1%");
+  controls.preloadLimitValue.textContent = t("unitPreload", settings.preloadLimit, "$1 comments");
 };
 
 const readControls = () => ({

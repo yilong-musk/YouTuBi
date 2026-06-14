@@ -1,0 +1,108 @@
+{
+  "extName": {
+    "message": "Youtubi",
+    "description": "Extension name."
+  },
+  "extDescription": {
+    "message": "Turn YouTube comments into danmaku overlays.",
+    "description": "Extension description."
+  },
+  "popupDanmaku": {
+    "message": "Danmaku",
+    "description": "Danmaku enabled setting label."
+  },
+  "popupDanmakuArea": {
+    "message": "Danmaku area",
+    "description": "Danmaku display area setting label."
+  },
+  "trackFull": {
+    "message": "Full"
+  },
+  "trackTwoThirds": {
+    "message": "2/3"
+  },
+  "trackHalf": {
+    "message": "Half"
+  },
+  "trackOneThird": {
+    "message": "1/3"
+  },
+  "popupSpeed": {
+    "message": "Speed"
+  },
+  "popupFontSize": {
+    "message": "Font size"
+  },
+  "popupOpacity": {
+    "message": "Opacity"
+  },
+  "popupPreload": {
+    "message": "Preload"
+  },
+  "unitSpeed": {
+    "message": "$1 px/s"
+  },
+  "unitFontSize": {
+    "message": "$1 px"
+  },
+  "unitOpacity": {
+    "message": "$1%"
+  },
+  "unitPreload": {
+    "message": "$1 comments"
+  },
+  "watchToggleAria": {
+    "message": "Toggle danmaku"
+  },
+  "watchToggleLabel": {
+    "message": "Danmaku"
+  },
+  "watchToggleOffTitle": {
+    "message": "Turn off danmaku"
+  },
+  "watchToggleOnTitle": {
+    "message": "Turn on danmaku"
+  },
+  "replyLoading": {
+    "message": "Loading replies..."
+  },
+  "replyFailed": {
+    "message": "Failed to load replies"
+  },
+  "replyEmpty": {
+    "message": "No replies"
+  },
+  "replyCount": {
+    "message": "$1 replies"
+  },
+  "replyMore": {
+    "message": "More replies available"
+  },
+  "logCommentsLoaded": {
+    "message": "[Youtubi] Comments loaded"
+  },
+  "logReason": {
+    "message": "Reason"
+  },
+  "logCommentCount": {
+    "message": "Comment count"
+  },
+  "logReplyEntryCount": {
+    "message": "Comments with reply entry"
+  },
+  "logCommentData": {
+    "message": "Comment data"
+  },
+  "logReasonDone": {
+    "message": "All loaded"
+  },
+  "logReasonMaxComments": {
+    "message": "Comment limit reached"
+  },
+  "logReasonContinuationMissing": {
+    "message": "Comment continuation not found"
+  },
+  "logReplyCommentsFailed": {
+    "message": "[Youtubi] Reply comments failed"
+  }
+}

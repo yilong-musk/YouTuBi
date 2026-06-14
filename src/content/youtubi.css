@@ -54,14 +54,14 @@
   box-sizing: border-box;
   min-width: 260px;
   max-width: min(420px, 70vw);
-  padding: 8px 10px;
+  padding: 9px 11px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 8px;
   background: rgba(15, 15, 15, 0.88);
   color: #fff;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
-  line-height: 1.35;
+  line-height: 1.4;
   text-shadow: none;
   white-space: normal;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.32);
@@ -70,13 +70,13 @@
 .ytbm-replies-header {
   margin: 0 0 6px;
   color: rgba(255, 255, 255, 0.72);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ytbm-reply-thread {
   position: relative;
   display: grid;
-  gap: 8px;
+  gap: 9px;
   padding-left: 0;
 }
 
@@ -94,9 +94,9 @@
   content: "";
   position: absolute;
   left: 0;
-  top: -8px;
+  top: -9px;
   width: 16px;
-  height: calc(0.675em + 8px);
+  height: calc(0.7em + 9px);
   border-left: 2px solid rgba(255, 255, 255, 0.18);
   border-bottom: 2px solid rgba(255, 255, 255, 0.18);
   border-radius: 0 0 0 10px;
@@ -104,9 +104,9 @@
 
 .ytbm-thread-text {
   color: rgba(255, 255, 255, 0.88);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .ytbm-thread-author {

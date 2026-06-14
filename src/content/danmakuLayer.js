@@ -330,7 +330,7 @@
         node.className = ITEM_CLASS;
         node.textContent = item.text;
         node.dataset.ytbmItemId = item.id;
-        node.addEventListener("pointerenter", () => this.pauseItem(item.id));
+        node.addEventListener("pointerenter", (event) => this.pauseItem(item.id, event));
         node.addEventListener("pointerleave", () => this.resumeItem(item.id));
         this.host.appendChild(node);
         this.nodes.set(item.id, node);
@@ -347,7 +347,7 @@
       node.style.transform = `translate3d(${x}px, 0, 0)`;
     }
 
-    pauseItem(id) {
+    pauseItem(id, event = null) {
       const item = this.findLayoutItem(id);
       if (!item || !this.settings.enabled) {
         return;
@@ -369,7 +369,7 @@
       }
 
       this.renderItem(item, state.pausedAge);
-      this.expandReplies(item);
+      this.expandReplies(item, event && event.clientX);
     }
 
     resumeItem(id) {
@@ -427,13 +427,16 @@
       return Boolean(item && item.comment && item.comment.replyContinuationToken && this.onReplyRequest);
     }
 
-    expandReplies(item) {
+    expandReplies(item, anchorClientX = null) {
       if (!this.hasReplyList(item)) {
         return;
       }
 
       const state = this.getReplyState(item.id);
       state.expanded = true;
+      if (isFiniteNumber(anchorClientX)) {
+        state.anchorClientX = anchorClientX;
+      }
 
       if (state.status === "done" || state.status === "failed") {
         this.renderReplyPanel(item, state);
@@ -530,6 +533,30 @@
       }
 
       panel.replaceChildren(...children);
+      this.positionReplyPanel(node, panel, state);
+    }
+
+    positionReplyPanel(node, panel, state) {
+      if (!node || !panel || !state || !isFiniteNumber(state.anchorClientX)) {
+        if (panel) {
+          panel.style.left = "";
+        }
+        return;
+      }
+
+      const nodeRect = node.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      const hostRect = this.host ? this.host.getBoundingClientRect() : null;
+      let left = state.anchorClientX - nodeRect.left;
+
+      if (hostRect && panelRect.width > 0) {
+        const margin = 8;
+        const minLeft = hostRect.left - nodeRect.left + margin;
+        const maxLeft = hostRect.right - nodeRect.left - panelRect.width - margin;
+        left = maxLeft >= minLeft ? clamp(left, minLeft, maxLeft) : minLeft;
+      }
+
+      panel.style.left = `${Math.round(left)}px`;
     }
 
     ensureReplyPanel(node) {
@@ -614,6 +641,7 @@
           replies: [],
           hasMore: false,
           replyCountText: "",
+          anchorClientX: null,
           message: ""
         };
         this.replyStates.set(id, state);

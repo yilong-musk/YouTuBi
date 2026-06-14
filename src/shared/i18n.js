@@ -1,8 +1,22 @@
 (() => {
-  const hasI18n = () =>
-    typeof chrome !== "undefined" &&
-    chrome.i18n &&
-    typeof chrome.i18n.getMessage === "function";
+  let i18nUnavailable = false;
+
+  const hasI18n = () => {
+    if (i18nUnavailable) {
+      return false;
+    }
+
+    try {
+      return (
+        typeof chrome !== "undefined" &&
+        chrome.i18n &&
+        typeof chrome.i18n.getMessage === "function"
+      );
+    } catch (error) {
+      i18nUnavailable = true;
+      return false;
+    }
+  };
 
   const normalizeSubstitutions = (substitutions) => {
     if (substitutions == null) {
@@ -24,11 +38,15 @@
     const values = normalizeSubstitutions(substitutions);
 
     if (hasI18n()) {
-      const message = values.length
-        ? chrome.i18n.getMessage(key, values)
-        : chrome.i18n.getMessage(key);
-      if (message) {
-        return message;
+      try {
+        const message = values.length
+          ? chrome.i18n.getMessage(key, values)
+          : chrome.i18n.getMessage(key);
+        if (message) {
+          return message;
+        }
+      } catch (error) {
+        i18nUnavailable = true;
       }
     }
 
@@ -36,8 +54,14 @@
   };
 
   const getUILanguage = () => {
-    if (hasI18n() && typeof chrome.i18n.getUILanguage === "function") {
-      return chrome.i18n.getUILanguage().replace("_", "-");
+    if (hasI18n()) {
+      try {
+        if (typeof chrome.i18n.getUILanguage === "function") {
+          return chrome.i18n.getUILanguage().replace("_", "-");
+        }
+      } catch (error) {
+        i18nUnavailable = true;
+      }
     }
 
     return navigator.language || "en";

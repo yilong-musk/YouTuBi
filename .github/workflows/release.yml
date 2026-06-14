@@ -1,0 +1,219 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  EXTENSION_SLUG: youtubi
+  GHCR_PACKAGE: youtubi-extension
+
+jobs:
+  release:
+    name: Build and publish extension
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(node -p "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8')).version")"
+          tag="${GITHUB_REF_NAME}"
+          expected_tag="v${version}"
+
+          if [ "${tag}" != "${expected_tag}" ]; then
+            echo "::error::Release tag ${tag} does not match manifest.json version ${version}. Expected ${expected_tag}."
+            exit 1
+          fi
+
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
+          echo "zip_name=${EXTENSION_SLUG}-${version}.zip" >> "${GITHUB_OUTPUT}"
+          echo "package_ref=ghcr.io/${owner}/${GHCR_PACKAGE}:${version}" >> "${GITHUB_OUTPUT}"
+          echo "latest_ref=ghcr.io/${owner}/${GHCR_PACKAGE}:latest" >> "${GITHUB_OUTPUT}"
+
+      - name: Validate extension files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node --check src/shared/i18n.js
+          node --check src/content/youtube.js
+          node --check src/content/danmakuLayer.js
+          node --check src/content/youtubeCommentApiSource.js
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          JSON.parse(fs.readFileSync("_locales/en/messages.json", "utf8"));
+          JSON.parse(fs.readFileSync("_locales/zh_CN/messages.json", "utf8"));
+
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          const iconPaths = [
+            ...Object.values(manifest.icons || {}),
+            ...Object.values((manifest.action && manifest.action.default_icon) || {})
+          ];
+
+          for (const iconPath of iconPaths) {
+            if (!fs.existsSync(iconPath)) {
+              throw new Error(`Missing icon: ${iconPath}`);
+            }
+          }
+
+          const files = [
+            "manifest.json",
+            "src/shared/i18n.js",
+            "src/popup/index.html",
+            "src/popup/popup.js",
+            "src/content/danmakuLayer.js",
+            "src/content/youtube.js",
+            "src/content/youtubeCommentApiSource.js"
+          ];
+          const text = files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
+          const keys = new Set();
+
+          for (const match of text.matchAll(/__MSG_([A-Za-z0-9_]+)__/g)) {
+            keys.add(match[1]);
+          }
+          for (const match of text.matchAll(/(?:data-i18n(?:-[a-z-]+)?=")([A-Za-z0-9_]+)"/g)) {
+            keys.add(match[1]);
+          }
+          for (const match of text.matchAll(/\bt\("([A-Za-z0-9_]+)"/g)) {
+            keys.add(match[1]);
+          }
+
+          for (const locale of ["en", "zh_CN"]) {
+            const messages = JSON.parse(fs.readFileSync(`_locales/${locale}/messages.json`, "utf8"));
+            const missing = [...keys].filter((key) => !messages[key]);
+            if (missing.length) {
+              throw new Error(`${locale} missing i18n keys: ${missing.join(", ")}`);
+            }
+          }
+          NODE
+
+      - name: Resolve release notes
+        id: notes
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          notes_path="${RUNNER_TEMP}/release-notes.md"
+          node <<'NODE'
+          const fs = require("fs");
+
+          const version = process.env.VERSION;
+          const notesPath = process.env.RUNNER_TEMP + "/release-notes.md";
+          const changelog = fs.readFileSync("CHANGELOG.md", "utf8");
+          const lines = changelog.split(/\r?\n/);
+          const headingPattern = new RegExp(`^##\\s+(?:\\[)?v?${version.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\])?(?:\\s+-\\s+.*)?\\s*$`);
+          const start = lines.findIndex((line) => headingPattern.test(line.trim()));
+
+          if (start === -1) {
+            throw new Error(`CHANGELOG.md is missing a section for ${version}.`);
+          }
+
+          let end = lines.length;
+          for (let index = start + 1; index < lines.length; index += 1) {
+            if (/^##\s+/.test(lines[index])) {
+              end = index;
+              break;
+            }
+          }
+
+          const notes = lines.slice(start + 1, end).join("\n").trim();
+          if (!notes) {
+            throw new Error(`CHANGELOG.md section for ${version} is empty.`);
+          }
+
+          fs.writeFileSync(notesPath, notes + "\n");
+          NODE
+
+          echo "path=${notes_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Package extension
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          zip_path="dist/${{ steps.meta.outputs.zip_name }}"
+          mkdir -p dist
+          zip -r "${zip_path}" manifest.json _locales assets src README.md CHANGELOG.md -x "*.DS_Store"
+
+          unzip -Z1 "${zip_path}" | grep -qx "manifest.json"
+          if unzip -Z1 "${zip_path}" | grep -q "^${EXTENSION_SLUG}/"; then
+            echo "::error::Zip package must not wrap files in a project directory."
+            exit 1
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.zip_name }}
+          path: dist/${{ steps.meta.outputs.zip_name }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          tag="${{ steps.meta.outputs.tag }}"
+          zip_path="dist/${{ steps.meta.outputs.zip_name }}"
+          notes_path="${{ steps.notes.outputs.path }}"
+
+          if gh release view "${tag}" >/dev/null 2>&1; then
+            gh release edit "${tag}" --notes-file "${notes_path}"
+            gh release upload "${tag}" "${zip_path}" --clobber
+          else
+            gh release create "${tag}" "${zip_path}" \
+              --verify-tag \
+              --title "Youtubi ${{ steps.meta.outputs.version }}" \
+              --notes-file "${notes_path}"
+          fi
+
+      - name: Set up ORAS
+        uses: oras-project/setup-oras@v1
+
+      - name: Publish zip to GitHub Packages
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          zip_path="dist/${{ steps.meta.outputs.zip_name }}"
+          source_url="https://github.com/${GITHUB_REPOSITORY}"
+
+          echo "${GHCR_TOKEN}" | oras login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+          oras push "${{ steps.meta.outputs.package_ref }}" \
+            "${zip_path}:application/zip" \
+            --annotation "org.opencontainers.image.title=Youtubi" \
+            --annotation "org.opencontainers.image.description=Chrome extension package" \
+            --annotation "org.opencontainers.image.source=${source_url}" \
+            --annotation "org.opencontainers.image.version=${{ steps.meta.outputs.version }}"
+
+          oras push "${{ steps.meta.outputs.latest_ref }}" \
+            "${zip_path}:application/zip" \
+            --annotation "org.opencontainers.image.title=Youtubi" \
+            --annotation "org.opencontainers.image.description=Chrome extension package" \
+            --annotation "org.opencontainers.image.source=${source_url}" \
+            --annotation "org.opencontainers.image.version=${{ steps.meta.outputs.version }}"

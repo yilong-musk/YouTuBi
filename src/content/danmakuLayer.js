@@ -5,7 +5,7 @@
   const ITEM_CLASS = "ytbm-line";
   const HORIZONTAL_PADDING = 24;
   const MIN_TRAVEL_SECONDS = 4.5;
-  const MAX_TRAVEL_SECONDS = 22;
+  const MAX_TRAVEL_SECONDS = 35;
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
   const t = (key, substitutions, fallback) =>

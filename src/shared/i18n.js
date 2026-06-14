@@ -4,7 +4,7 @@
 
   const FALLBACK_MESSAGES = {
     en: {
-      extName: "Youtubi",
+      extName: "YouTuBi",
       extDescription: "Turn YouTube comments into danmaku overlays.",
       popupDanmaku: "Danmaku",
       popupDanmakuArea: "Danmaku area",
@@ -40,7 +40,7 @@
       logReplyCommentsFailed: "[Youtubi] Reply comments failed"
     },
     zh_CN: {
-      extName: "Youtubi",
+      extName: "YouTuBi",
       extDescription: "打开YouTube看弹幕～",
       popupDanmaku: "弹幕",
       popupDanmakuArea: "弹幕范围",

@@ -20,7 +20,9 @@
   position: absolute;
   left: 0;
   top: 0;
-  display: block;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.12em;
   max-width: none;
   white-space: nowrap;
   color: #fff;
@@ -33,6 +35,19 @@
     -1px 0 2px rgba(0, 0, 0, 0.75);
   pointer-events: auto;
   will-change: transform;
+}
+
+.ytbm-text-fragment {
+  display: inline-block;
+}
+
+.ytbm-emoji {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 1.25em;
+  height: 1.25em;
+  object-fit: contain;
+  vertical-align: -0.2em;
 }
 
 .ytbm-line.is-hover-paused {

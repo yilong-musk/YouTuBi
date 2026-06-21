@@ -31,8 +31,11 @@
         "src/shared/settings.js",
         "src/content/danmakuLayer.js",
         "src/content/commentSource.js",
+        "src/content/youtubeInnertube.js",
         "src/content/youtubeCommentApiSource.js",
+        "src/content/youtubeLiveChatSource.js",
         "src/content/timelineScheduler.js",
+        "src/content/realtimeScheduler.js",
         "src/content/youtube.js"
       ],
       "run_at": "document_idle"

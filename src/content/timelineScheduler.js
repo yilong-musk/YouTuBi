@@ -6,17 +6,19 @@
   const LATE_COMMENT_LEAD_SECONDS = 1.25;
   const MIN_LATE_INTERVAL_SECONDS = 0.35;
   const MAX_LATE_INTERVAL_SECONDS = 2;
+  const INITIAL_BACKLOG_MIN_TIME_SECONDS = 0.75;
 
   const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
   class TimelineScheduler {
-    constructor({ layer, video, onStateChange, autoRelease = true }) {
+    constructor({ layer, video, onStateChange, autoRelease = true, suppressInitialBacklog = false }) {
       this.layer = layer;
       this.video = video;
       this.onStateChange = onStateChange;
       this.autoReleaseDelay = autoRelease ? INITIAL_RELEASE_TIMEOUT_MS : 0;
+      this.suppressInitialBacklog = Boolean(suppressInitialBacklog);
       this.comments = new Map();
       this.timeline = [];
       this.initialReleased = false;
@@ -26,6 +28,8 @@
       this.lastRenderedItems = 0;
       this.nextLateAppearAt = null;
       this.initialReleaseRequested = false;
+      this.initiallySuppressedIds = new Set();
+      this.initialSuppressionCutoff = null;
       this.boundRender = () => this.renderNow();
       this.boundPlay = () => this.resumePlayback();
       this.boundSeek = () => this.handleSeek();
@@ -47,7 +51,7 @@
         return;
       }
 
-      this.timeline.push(this.createLateTimelineItem(comment));
+      this.timeline.push(this.createTimelineItem(comment));
       this.timeline.sort((left, right) => left.appearAt - right.appearAt || this.compareOrder(left, right));
       this.publishTimeline("timeline-updated");
     }
@@ -106,6 +110,7 @@
       this.initialReleaseTimer = 0;
 
       this.timeline = this.buildTimeline(duration);
+      this.suppressInitialBacklogItems();
       this.initialReleased = true;
       this.lastDuration = duration;
       this.nextLateAppearAt = this.getFutureStartTime();
@@ -126,9 +131,41 @@
       }
 
       this.timeline = this.buildTimeline(duration);
+      this.initiallySuppressedIds.clear();
+      this.initialSuppressionCutoff = null;
       this.lastDuration = duration;
       this.nextLateAppearAt = this.getFutureStartTime();
       this.publishTimeline(reason);
+    }
+
+    suppressInitialBacklogItems() {
+      this.initiallySuppressedIds.clear();
+
+      if (!this.suppressInitialBacklog) {
+        return;
+      }
+
+      const currentTime = this.getCurrentTime();
+      if (!isFiniteNumber(currentTime) || currentTime < INITIAL_BACKLOG_MIN_TIME_SECONDS) {
+        return;
+      }
+
+      this.initialSuppressionCutoff = currentTime;
+      this.timeline.forEach((item) => {
+        if (!item || !item.comment) {
+          return;
+        }
+
+        const travelDuration = this.getTravelDuration(item.comment);
+        if (
+          item.comment.source === "live-chat-replay" &&
+          isFiniteNumber(item.appearAt) &&
+          isFiniteNumber(travelDuration) &&
+          item.appearAt + travelDuration < currentTime
+        ) {
+          this.initiallySuppressedIds.add(item.id);
+        }
+      });
     }
 
     buildTimeline(duration) {
@@ -136,9 +173,13 @@
 
       return sorted
         .map((comment, index) => {
-          const ratio = this.fallbackRatio(index, sorted.length);
-          const travelDuration = this.getTravelDuration(comment.text);
+          if (isFiniteNumber(comment.appearAt)) {
+            return this.createTimelineItem(comment, duration);
+          }
+
+          const travelDuration = this.getTravelDuration(comment);
           const latestAppearAt = this.getLatestAppearAt(duration, travelDuration);
+          const ratio = this.fallbackRatio(index, sorted.length);
           const firstAppearAt = Math.min(START_OFFSET_SECONDS, latestAppearAt);
           const firstFinishAt = firstAppearAt + travelDuration;
           const latestFinishAt = Math.max(firstFinishAt, duration - END_MARGIN_SECONDS);
@@ -155,11 +196,28 @@
         .sort((left, right) => left.appearAt - right.appearAt || this.compareOrder(left, right));
     }
 
+    createTimelineItem(comment, duration = null) {
+      if (isFiniteNumber(comment.appearAt)) {
+        const timelineDuration = duration || this.getDuration() || this.lastDuration || 1;
+        const travelDuration = this.getTravelDuration(comment);
+        const latestAppearAt = this.getLatestAppearAt(timelineDuration, travelDuration);
+        return {
+          id: comment.id,
+          text: comment.text,
+          comment,
+          order: comment.order,
+          appearAt: clamp(comment.appearAt, 0, latestAppearAt)
+        };
+      }
+
+      return this.createLateTimelineItem(comment);
+    }
+
     createLateTimelineItem(comment) {
       const duration = this.getDuration() || this.lastDuration || 1;
       const currentTime = this.getCurrentTime() || 0;
       const interval = this.getLateInterval(duration);
-      const travelDuration = this.getTravelDuration(comment.text);
+      const travelDuration = this.getTravelDuration(comment);
       const latestUsefulTime = this.getLatestAppearAt(duration, travelDuration);
       const preferredTime = Math.max(
         Math.min(START_OFFSET_SECONDS, latestUsefulTime),
@@ -200,9 +258,11 @@
       );
     }
 
-    getTravelDuration(text) {
+    getTravelDuration(value) {
+      const text = value && typeof value === "object" ? value.text : value;
+      const fragments = value && typeof value === "object" ? value.fragments : null;
       if (this.layer && typeof this.layer.getTravelDuration === "function") {
-        return this.layer.getTravelDuration(text);
+        return this.layer.getTravelDuration(text, fragments);
       }
 
       return MAX_LATE_INTERVAL_SECONDS;
@@ -210,7 +270,7 @@
 
     getMaxTravelDuration(comments) {
       return Array.from(comments).reduce((maxDuration, comment) => {
-        const travelDuration = this.getTravelDuration(comment && comment.text);
+        const travelDuration = this.getTravelDuration(comment);
         return isFiniteNumber(travelDuration) ? Math.max(maxDuration, travelDuration) : maxDuration;
       }, 0);
     }
@@ -222,11 +282,19 @@
 
     publishTimeline(status) {
       if (this.layer && typeof this.layer.setTimeline === "function") {
-        this.layer.setTimeline(this.timeline);
+        this.layer.setTimeline(this.getRenderableTimeline());
       }
 
       this.renderNow();
       this.notifyState({ status });
+    }
+
+    getRenderableTimeline() {
+      if (!this.initiallySuppressedIds.size) {
+        return this.timeline;
+      }
+
+      return this.timeline.filter((item) => !this.initiallySuppressedIds.has(item.id));
     }
 
     handleDurationChange() {
@@ -252,6 +320,12 @@
     }
 
     compareComments(left, right) {
+      const leftAppearAt = isFiniteNumber(left.appearAt) ? left.appearAt : Number.POSITIVE_INFINITY;
+      const rightAppearAt = isFiniteNumber(right.appearAt) ? right.appearAt : Number.POSITIVE_INFINITY;
+      if (leftAppearAt !== Number.POSITIVE_INFINITY || rightAppearAt !== Number.POSITIVE_INFINITY) {
+        return leftAppearAt - rightAppearAt || this.compareOrder(left, right);
+      }
+
       const leftTime = isFiniteNumber(left.publishedAt) ? left.publishedAt : Number.POSITIVE_INFINITY;
       const rightTime = isFiniteNumber(right.publishedAt) ? right.publishedAt : Number.POSITIVE_INFINITY;
 
@@ -295,7 +369,25 @@
     }
 
     handleSeek() {
+      const currentTime = this.getCurrentTime();
+      if (
+        this.initiallySuppressedIds.size &&
+        isFiniteNumber(currentTime) &&
+        isFiniteNumber(this.initialSuppressionCutoff) &&
+        currentTime <= this.initialSuppressionCutoff
+      ) {
+        this.clearInitialSuppression();
+      }
       this.renderNow();
+    }
+
+    clearInitialSuppression() {
+      this.initiallySuppressedIds.clear();
+      this.initialSuppressionCutoff = null;
+
+      if (this.layer && typeof this.layer.setTimeline === "function") {
+        this.layer.setTimeline(this.timeline);
+      }
     }
 
     finishAtEnd() {
@@ -369,6 +461,8 @@
       this.initialReleaseTimer = 0;
       this.lastRenderedItems = 0;
       this.nextLateAppearAt = null;
+      this.initiallySuppressedIds.clear();
+      this.initialSuppressionCutoff = null;
 
       if (this.layer && typeof this.layer.setTimeline === "function") {
         this.layer.setTimeline([]);
@@ -420,6 +514,8 @@
       this.frameRequest = 0;
       this.comments.clear();
       this.timeline = [];
+      this.initiallySuppressedIds.clear();
+      this.initialSuppressionCutoff = null;
       this.clearLayer();
       this.layer = null;
       this.video = null;

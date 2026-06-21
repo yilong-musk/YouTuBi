@@ -19,6 +19,15 @@
 
   const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
 
+  const normalizeImageUrl = (url) => {
+    try {
+      const parsed = new URL(String(url || ""), location.href);
+      return /^https?:$/.test(parsed.protocol) ? parsed.href : "";
+    } catch (error) {
+      return "";
+    }
+  };
+
   class DanmakuLayer {
     constructor(playerElement, settings, options = {}) {
       this.playerElement = playerElement;
@@ -179,12 +188,14 @@
       const previousItems = new Map(this.layoutItems.map((item) => [item.id, item]));
 
       this.layoutItems = this.timeline.map((item, index) => {
-        const metrics = this.getMetrics(item.text);
+        const fragments = this.getItemFragments(item);
+        const metrics = this.getMetrics(item.text, fragments);
         const previous = previousItems.get(item.id);
         const canReuseTrack =
           previous &&
           previous.track < this.trackCount &&
           previous.text === metrics.text &&
+          previous.fragmentKey === metrics.fragmentKey &&
           previous.appearAt === item.appearAt &&
           trackAvailableAt[previous.track] <= item.appearAt;
         const track = canReuseTrack
@@ -221,13 +232,84 @@
       return bestTrack;
     }
 
-    getMetrics(text) {
+    getItemFragments(item) {
+      const fragments = item && item.comment && Array.isArray(item.comment.fragments)
+        ? item.comment.fragments
+        : item && Array.isArray(item.fragments)
+          ? item.fragments
+          : null;
+
+      return this.normalizeFragments(fragments, item && item.text);
+    }
+
+    normalizeFragments(fragments, fallbackText) {
+      const normalized = [];
+      let textLength = 0;
+
+      if (Array.isArray(fragments)) {
+        for (const fragment of fragments) {
+          if (!fragment || typeof fragment !== "object") {
+            continue;
+          }
+
+          if (fragment.type === "image") {
+            const url = normalizeImageUrl(fragment.url);
+            if (!url) {
+              continue;
+            }
+
+            normalized.push({
+              type: "image",
+              url,
+              alt: cleanText(fragment.alt || "emoji")
+            });
+            continue;
+          }
+
+          const text = String(fragment.text || "").replace(/\s+/g, " ");
+          if (!text) {
+            continue;
+          }
+
+          const remaining = Math.max(0, 220 - textLength);
+          if (!remaining) {
+            break;
+          }
+
+          const sliced = text.slice(0, remaining);
+          textLength += sliced.length;
+          normalized.push({ type: "text", text: sliced });
+        }
+      }
+
+      if (normalized.length) {
+        return normalized;
+      }
+
+      const text = cleanText(fallbackText);
+      return text ? [{ type: "text", text }] : [];
+    }
+
+    getFragmentKey(fragments) {
+      return fragments
+        .map((fragment) => fragment.type === "image" ? `i:${fragment.url}` : `t:${fragment.text}`)
+        .join("|");
+    }
+
+    getEmojiSize() {
+      return Math.max(18, Math.round(this.settings.fontSize * 1.25));
+    }
+
+    getMetrics(text, fragments = null) {
       const normalized = cleanText(text);
+      const normalizedFragments = this.normalizeFragments(fragments, normalized);
+      const fragmentKey = this.getFragmentKey(normalizedFragments);
       const cacheKey = [
         this.width,
         this.settings.fontSize,
         this.settings.speed,
-        normalized
+        normalized,
+        fragmentKey
       ].join("|");
       const cached = this.metricsCache.get(cacheKey);
 
@@ -239,9 +321,9 @@
         this.measureContext.font = `600 ${this.settings.fontSize}px Roboto, Arial, "Microsoft YaHei", sans-serif`;
       }
 
-      const measuredWidth = this.measureContext
-        ? Math.ceil(this.measureContext.measureText(normalized).width)
-        : 0;
+      const measuredWidth = normalizedFragments.length
+        ? this.measureFragmentsWidth(normalizedFragments)
+        : this.measureTextWidth(normalized);
       const textWidth = Math.max(16, measuredWidth || Math.ceil(normalized.length * this.settings.fontSize * 0.65));
       const startX = this.width + HORIZONTAL_PADDING;
       const endX = -textWidth - HORIZONTAL_PADDING;
@@ -250,6 +332,8 @@
       const safeGapSeconds = Math.max(0.45, (textWidth + 96) / this.settings.speed);
       const metrics = {
         text: normalized,
+        fragments: normalizedFragments,
+        fragmentKey,
         textWidth,
         startX,
         endX,
@@ -262,8 +346,26 @@
       return metrics;
     }
 
-    getTravelDuration(text) {
-      return this.getMetrics(text).duration;
+    measureTextWidth(text) {
+      return this.measureContext
+        ? Math.ceil(this.measureContext.measureText(text).width)
+        : 0;
+    }
+
+    measureFragmentsWidth(fragments) {
+      const emojiSize = this.getEmojiSize();
+      return fragments.reduce((width, fragment, index) => {
+        const gap = index > 0 ? Math.max(2, Math.round(this.settings.fontSize * 0.12)) : 0;
+        if (fragment.type === "image") {
+          return width + gap + emojiSize;
+        }
+
+        return width + gap + this.measureTextWidth(fragment.text);
+      }, 0);
+    }
+
+    getTravelDuration(text, fragments = null) {
+      return this.getMetrics(text, fragments).duration;
     }
 
     renderAt(currentTime) {
@@ -328,13 +430,14 @@
       if (!node) {
         node = document.createElement("div");
         node.className = ITEM_CLASS;
-        node.textContent = item.text;
         node.dataset.ytbmItemId = item.id;
         node.addEventListener("pointerenter", (event) => this.pauseItem(item.id, event));
         node.addEventListener("pointerleave", () => this.resumeItem(item.id));
         this.host.appendChild(node);
         this.nodes.set(item.id, node);
       }
+
+      this.renderItemContent(node, item);
 
       const progress = clamp(age / item.duration, 0, 1);
       const x = item.startX - progress * item.distance;
@@ -345,6 +448,39 @@
       node.style.opacity = `${this.settings.opacity}`;
       node.style.top = `${item.track * this.trackHeight}px`;
       node.style.transform = `translate3d(${x}px, 0, 0)`;
+    }
+
+    renderItemContent(node, item) {
+      const contentKey = item.fragmentKey || item.text;
+      if (node.dataset.ytbmContentKey === contentKey) {
+        return;
+      }
+
+      const replyPanel = node.querySelector(".ytbm-replies");
+      const children = (item.fragments && item.fragments.length ? item.fragments : [{ type: "text", text: item.text }])
+        .map((fragment) => {
+          if (fragment.type === "image") {
+            const image = document.createElement("img");
+            image.className = "ytbm-emoji";
+            image.src = fragment.url;
+            image.alt = fragment.alt || "";
+            image.decoding = "async";
+            image.loading = "eager";
+            image.referrerPolicy = "no-referrer";
+            return image;
+          }
+
+          const span = document.createElement("span");
+          span.className = "ytbm-text-fragment";
+          span.textContent = fragment.text || "";
+          return span;
+        });
+
+      node.replaceChildren(...children);
+      if (replyPanel) {
+        node.append(replyPanel);
+      }
+      node.dataset.ytbmContentKey = contentKey;
     }
 
     pauseItem(id, event = null) {

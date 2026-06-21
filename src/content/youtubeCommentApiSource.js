@@ -1,9 +1,9 @@
 (() => {
-  const ENDPOINT = "https://www.youtube.com/youtubei/v1/next";
   const PAGE_DELAY_MS = 120;
-  const CONFIG_RETRY_MS = 250;
-  const CONFIG_RETRY_COUNT = 20;
+  const INITIAL_EMPTY_RETRY_MS = 600;
+  const INITIAL_EMPTY_RETRY_COUNT = 6;
   const MAX_REPLY_COMMENTS = 50;
+  const innertube = window.YoutubiInnertube;
 
   const commentTime = window.YoutubiCommentTime || {
     normalizeText: (text) => String(text || "").replace(/\s+/g, " ").trim(),
@@ -12,285 +12,20 @@
 
   const normalizeText = commentTime.normalizeText;
   const parsePublishedAt = commentTime.parsePublishedAt;
+  const {
+    sleep,
+    isAbortError,
+    getNested,
+    firstText,
+    firstUrl,
+    getHandle,
+    walk,
+    findContinuationToken,
+    findNextContinuation
+  } = innertube;
 
   const t = (key, substitutions, fallback) =>
     window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
-
-  const sleep = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
-
-  const isAbortError = (error) =>
-    error && (error.name === "AbortError" || error.message === "The user aborted a request.");
-
-  const getNested = (value, path) => {
-    let current = value;
-
-    for (const key of path) {
-      if (!current || typeof current !== "object") {
-        return null;
-      }
-
-      current = current[key];
-    }
-
-    return current || null;
-  };
-
-  const textFrom = (value) => {
-    if (!value) {
-      return "";
-    }
-
-    if (typeof value === "string") {
-      return normalizeText(value);
-    }
-
-    if (Array.isArray(value)) {
-      return normalizeText(value.map(textFrom).filter(Boolean).join(""));
-    }
-
-    if (typeof value !== "object") {
-      return "";
-    }
-
-    if (typeof value.simpleText === "string") {
-      return normalizeText(value.simpleText);
-    }
-
-    if (typeof value.content === "string") {
-      return normalizeText(value.content);
-    }
-
-    if (typeof value.text === "string") {
-      return normalizeText(value.text);
-    }
-
-    if (Array.isArray(value.runs)) {
-      return normalizeText(value.runs.map((run) => run.text || run.content || "").join(""));
-    }
-
-    if (Array.isArray(value.commandRuns)) {
-      return normalizeText(value.commandRuns.map((run) => run.text || run.content || "").join(""));
-    }
-
-    return "";
-  };
-
-  const firstText = (...values) => {
-    for (const value of values) {
-      const text = textFrom(value);
-      if (text) {
-        return text;
-      }
-    }
-
-    return "";
-  };
-
-  const firstUrl = (...values) => {
-    for (const value of values) {
-      if (typeof value === "string" && value) {
-        return value;
-      }
-
-      if (Array.isArray(value)) {
-        const found = firstUrl(...value);
-        if (found) {
-          return found;
-        }
-      }
-
-      if (value && typeof value === "object") {
-        const found = firstUrl(
-          value.url,
-          value.thumbnails,
-          value.sources,
-          value.image,
-          value.avatar
-        );
-        if (found) {
-          return found;
-        }
-      }
-    }
-
-    return "";
-  };
-
-  const getHandle = (text) => {
-    const match = normalizeText(text).match(/(^|\s)(@[\p{L}\p{N}_.-]+)/u);
-    return match ? match[2] : "";
-  };
-
-  const walk = (value, visitor) => {
-    if (!value || typeof value !== "object") {
-      return;
-    }
-
-    if (visitor(value) === false) {
-      return;
-    }
-
-    if (Array.isArray(value)) {
-      value.forEach((item) => walk(item, visitor));
-      return;
-    }
-
-    Object.values(value).forEach((item) => walk(item, visitor));
-  };
-
-  const extractBalancedJson = (text, startIndex) => {
-    const openIndex = text.indexOf("{", startIndex);
-    if (openIndex === -1) {
-      return null;
-    }
-
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-
-    for (let index = openIndex; index < text.length; index += 1) {
-      const char = text[index];
-
-      if (inString) {
-        if (escaped) {
-          escaped = false;
-        } else if (char === "\\") {
-          escaped = true;
-        } else if (char === "\"") {
-          inString = false;
-        }
-
-        continue;
-      }
-
-      if (char === "\"") {
-        inString = true;
-      } else if (char === "{") {
-        depth += 1;
-      } else if (char === "}") {
-        depth -= 1;
-
-        if (depth === 0) {
-          return text.slice(openIndex, index + 1);
-        }
-      }
-    }
-
-    return null;
-  };
-
-  const parseJsonAfter = (text, marker) => {
-    const markerIndex = text.indexOf(marker);
-    if (markerIndex === -1) {
-      return null;
-    }
-
-    const jsonText = extractBalancedJson(text, markerIndex + marker.length);
-    if (!jsonText) {
-      return null;
-    }
-
-    try {
-      return JSON.parse(jsonText);
-    } catch (error) {
-      return null;
-    }
-  };
-
-  const getScriptTexts = () =>
-    Array.from(document.scripts)
-      .map((script) => script.textContent || "")
-      .filter((text) => text.includes("INNERTUBE") || text.includes("ytInitialData"));
-
-  const extractConfig = () => {
-    const scripts = getScriptTexts();
-    const config = {};
-    let apiKey = "";
-
-    for (const text of scripts) {
-      const ytcfg = parseJsonAfter(text, "ytcfg.set(");
-      if (ytcfg && typeof ytcfg === "object") {
-        Object.assign(config, ytcfg);
-      }
-
-      if (!apiKey) {
-        const match = text.match(/"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"/);
-        apiKey = match && match[1] ? match[1] : "";
-      }
-    }
-
-    apiKey = config.INNERTUBE_API_KEY || apiKey;
-
-    const context = config.INNERTUBE_CONTEXT || {
-      client: {
-        clientName: config.INNERTUBE_CLIENT_NAME || "WEB",
-        clientVersion: config.INNERTUBE_CLIENT_VERSION || "",
-        hl: config.HL || document.documentElement.lang || "en",
-        gl: config.GL || "US",
-        visitorData: config.VISITOR_DATA
-      }
-    };
-
-    return {
-      apiKey,
-      context,
-      clientName: String(config.INNERTUBE_CONTEXT_CLIENT_NAME || "1"),
-      clientVersion:
-        config.INNERTUBE_CONTEXT_CLIENT_VERSION ||
-        getNested(context, ["client", "clientVersion"]) ||
-        "",
-      visitorData: config.VISITOR_DATA || getNested(context, ["client", "visitorData"]) || ""
-    };
-  };
-
-  const extractInitialData = () => {
-    for (const text of getScriptTexts()) {
-      const data =
-        parseJsonAfter(text, "ytInitialData =") ||
-        parseJsonAfter(text, "var ytInitialData =") ||
-        parseJsonAfter(text, "window[\"ytInitialData\"] =");
-
-      if (data) {
-        return data;
-      }
-    }
-
-    return null;
-  };
-
-  const getContinuationToken = (value) =>
-    getNested(value, ["continuationEndpoint", "continuationCommand", "token"]) ||
-    getNested(value, ["command", "continuationCommand", "token"]) ||
-    getNested(value, ["button", "buttonRenderer", "command", "continuationCommand", "token"]) ||
-    getNested(value, ["button", "buttonRenderer", "serviceEndpoint", "continuationCommand", "token"]) ||
-    getNested(value, ["button", "buttonRenderer", "navigationEndpoint", "continuationCommand", "token"]) ||
-    getNested(value, ["buttonRenderer", "command", "continuationCommand", "token"]) ||
-    getNested(value, ["buttonRenderer", "serviceEndpoint", "continuationCommand", "token"]) ||
-    getNested(value, ["buttonRenderer", "navigationEndpoint", "continuationCommand", "token"]) ||
-    getNested(value, ["onTap", "innertubeCommand", "continuationCommand", "token"]) ||
-    getNested(value, ["continuationCommand", "token"]) ||
-    getNested(value, ["reloadContinuationData", "continuation"]) ||
-    getNested(value, ["nextContinuationData", "continuation"]) ||
-    null;
-
-  const findContinuationToken = (value) => {
-    let token = null;
-
-    walk(value, (node) => {
-      if (token) {
-        return false;
-      }
-
-      const found = getContinuationToken(node);
-      if (found) {
-        token = found;
-      }
-
-      return token ? false : undefined;
-    });
-
-    return token;
-  };
 
   const isCommentSection = (section) => {
     const identifier = [
@@ -306,7 +41,9 @@
     }
 
     try {
-      return JSON.stringify(section).includes("comment-item-section");
+      return /commentThreadRenderer|commentViewModel|commentEntityPayload|comment-item-section|comments-entry-point/i.test(
+        JSON.stringify(section)
+      );
     } catch (error) {
       return false;
     }
@@ -329,37 +66,6 @@
     });
 
     return token;
-  };
-
-  const findNextContinuation = (data) => {
-    const actions = [];
-
-    walk(data, (node) => {
-      if (node.appendContinuationItemsAction) {
-        actions.push(node.appendContinuationItemsAction);
-      }
-
-      if (node.reloadContinuationItemsCommand) {
-        actions.push(node.reloadContinuationItemsCommand);
-      }
-    });
-
-    for (const action of actions) {
-      const items = action.continuationItems || [];
-
-      for (let index = items.length - 1; index >= 0; index -= 1) {
-        const item = items[index];
-        const token = item && item.continuationItemRenderer
-          ? getContinuationToken(item.continuationItemRenderer)
-          : null;
-
-        if (token) {
-          return token;
-        }
-      }
-    }
-
-    return null;
   };
 
   const unwrapCommentRenderer = (value) => {
@@ -667,19 +373,35 @@
           maxComments: this.maxComments
         });
 
-        this.reportStatus("fetching-watch-next", { loadedCount: this.loadedCount });
-        const initial = await this.fetchNext(config, {
-          videoId: this.videoId,
-          contentCheckOk: true,
-          racyCheckOk: true
-        });
-        if (this.disposed || !initial || !this.isCurrentPage()) {
-          return;
-        }
+        let continuation = "";
+        for (let attempt = 0; attempt <= INITIAL_EMPTY_RETRY_COUNT; attempt += 1) {
+          this.reportStatus(attempt ? "retrying-watch-next" : "fetching-watch-next", {
+            loadedCount: this.loadedCount,
+            attempt
+          });
 
-        const result = this.emitFromResponse(initial);
-        let continuation = findInitialCommentContinuation(initial);
-        this.accumulateFetchResult(result);
+          const initial = await this.fetchNext(config, {
+            videoId: this.videoId,
+            contentCheckOk: true,
+            racyCheckOk: true
+          });
+          if (this.disposed || !initial || !this.isCurrentPage()) {
+            return;
+          }
+
+          const result = this.emitFromResponse(initial);
+          continuation = findInitialCommentContinuation(initial);
+          this.accumulateFetchResult(result);
+
+          if (continuation || this.loadedCount > 0 || attempt >= INITIAL_EMPTY_RETRY_COUNT) {
+            break;
+          }
+
+          await sleep(INITIAL_EMPTY_RETRY_MS);
+          if (!this.isCurrentPage()) {
+            return;
+          }
+        }
 
         if (!continuation) {
           this.logFinalFetchResult("continuation-missing");
@@ -776,49 +498,11 @@
     }
 
     async waitForConfig() {
-      for (let attempt = 0; attempt < CONFIG_RETRY_COUNT; attempt += 1) {
-        if (this.disposed) {
-          return null;
-        }
-
-        const config = extractConfig();
-        if (config.apiKey && config.context) {
-          return config;
-        }
-
-        await sleep(CONFIG_RETRY_MS);
-      }
-
-      return extractConfig();
+      return innertube.waitForConfig(() => this.disposed);
     }
 
     async fetchNext(config, body) {
-      const headers = {
-        "content-type": "application/json",
-        "x-youtube-client-name": config.clientName,
-        "x-youtube-client-version": config.clientVersion
-      };
-
-      if (config.visitorData) {
-        headers["x-goog-visitor-id"] = config.visitorData;
-      }
-
-      const response = await fetch(`${ENDPOINT}?key=${encodeURIComponent(config.apiKey)}&prettyPrint=false`, {
-        method: "POST",
-        credentials: "include",
-        headers,
-        signal: this.abortController && this.abortController.signal,
-        body: JSON.stringify({
-          context: config.context,
-          ...body
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error(`youtubei next failed: ${response.status}`);
-      }
-
-      return response.json();
+      return innertube.fetchNext(config, body, this.abortController && this.abortController.signal);
     }
 
     emitFromResponse(response) {

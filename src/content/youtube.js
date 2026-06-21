@@ -37,13 +37,21 @@
   const t = (key, substitutions, fallback) =>
     window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
 
+  const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
+  const isTrueFlag = (value) => value === true || value === "true" || value === 1 || value === "1";
+  const MODE_DETECTION_RETRY_MS = 250;
+  const NORMAL_MODE_DETECTION_RETRY_COUNT = 20;
+
   class YoutubiApp {
     constructor() {
       this.settings = window.YoutubiSettings.DEFAULT_SETTINGS;
       this.layer = null;
       this.commentSource = null;
       this.apiCommentSource = null;
+      this.liveChatSource = null;
       this.timelineScheduler = null;
+      this.realtimeScheduler = null;
+      this.liveReplayLoadState = null;
       this.toggleButton = null;
       this.toggleButtonLabel = null;
       this.toggleMountTimer = 0;
@@ -55,10 +63,13 @@
       this.routeTimer = 0;
       this.retryTimer = 0;
       this.retryCount = 0;
+      this.modeRetryCount = 0;
+      this.modeRetryVideoId = "";
       this.lastUrl = "";
       this.activeVideoId = "";
+      this.activeMode = "normal";
       this.debugState = null;
-      this.boundRouteChanged = () => this.scheduleRebuild(300);
+      this.boundRouteChanged = () => this.handleRouteChanged();
     }
 
     async start() {
@@ -70,6 +81,15 @@
 
       this.installRouteWatchers();
       this.scheduleRebuild(0);
+    }
+
+    handleRouteChanged() {
+      const currentVideoId = location.pathname === "/watch" ? this.getVideoId() : "";
+      if (this.activeVideoId && (!currentVideoId || currentVideoId !== this.activeVideoId)) {
+        this.disposePage();
+      }
+
+      this.scheduleRebuild(300);
     }
 
     installRouteWatchers() {
@@ -105,7 +125,7 @@
         return false;
       }
 
-      if (!this.activeVideoId || videoId !== this.activeVideoId || !this.layer || !this.timelineScheduler) {
+      if (!this.activeVideoId || videoId !== this.activeVideoId || !this.layer || !this.getActiveScheduler()) {
         return true;
       }
 
@@ -123,7 +143,8 @@
       }
 
       const video = player && this.findVideo(player);
-      return Boolean(video && this.timelineScheduler.video && video !== this.timelineScheduler.video);
+      const scheduler = this.getActiveScheduler();
+      return Boolean(video && scheduler.video && video !== scheduler.video);
     }
 
     scheduleRebuild(delay) {
@@ -141,6 +162,17 @@
         return;
       }
 
+      const videoId = this.getVideoId();
+      if (!videoId) {
+        this.lastUrl = currentUrl;
+        this.disposePage();
+        return;
+      }
+
+      if (this.activeVideoId && videoId !== this.activeVideoId) {
+        this.disposePage();
+      }
+
       const player = this.findPlayer();
       const video = player && this.findVideo(player);
       if (!player || !video) {
@@ -153,28 +185,60 @@
         return;
       }
 
+      const playerVideoId = this.getPlayerVideoId(player);
+      if (playerVideoId && playerVideoId !== videoId) {
+        this.retryCount += 1;
+
+        if (this.retryCount <= 40) {
+          this.scheduleRebuild(250);
+        }
+
+        return;
+      }
+
+      const activeScheduler = this.getActiveScheduler();
       if (
         this.layer &&
-        this.timelineScheduler &&
+        activeScheduler &&
         this.layer.host &&
         this.layer.host.isConnected &&
         this.layer.playerElement === player &&
-        this.timelineScheduler.video === video &&
-        this.lastUrl === currentUrl
+        activeScheduler.video === video &&
+        this.lastUrl === currentUrl &&
+        !this.shouldRetryMountedLiveChat()
       ) {
         return;
       }
 
       this.disposePage();
+      const playbackMode = this.detectPlaybackMode(player, video, videoId);
+      if (this.shouldDelayNormalMode(playbackMode)) {
+        if (this.modeRetryVideoId !== videoId) {
+          this.modeRetryVideoId = videoId;
+          this.modeRetryCount = 0;
+        }
+
+        this.modeRetryCount += 1;
+        if (this.modeRetryCount <= NORMAL_MODE_DETECTION_RETRY_COUNT) {
+          this.scheduleRebuild(MODE_DETECTION_RETRY_MS);
+          return;
+        }
+
+        playbackMode.modeReason = "normal-detection-timeout";
+      }
+
       this.retryCount = 0;
+      this.modeRetryCount = 0;
+      this.modeRetryVideoId = "";
       this.lastUrl = currentUrl;
-      const videoId = this.getVideoId();
       this.activeVideoId = videoId;
-      this.resetDebugState(videoId);
+      this.activeMode = playbackMode.mode;
+      this.resetDebugState(videoId, playbackMode);
       this.layer = new window.YoutubiDanmakuLayer(player, this.settings, {
         onTimingChange: (event) => {
-          if (this.timelineScheduler) {
-            this.timelineScheduler.handleLayoutTimingChange(event.reason);
+          const scheduler = this.getActiveScheduler();
+          if (scheduler && typeof scheduler.handleLayoutTimingChange === "function") {
+            scheduler.handleLayoutTimingChange(event.reason);
           }
         },
         onReplyRequest: (comment) => {
@@ -185,13 +249,24 @@
           return this.loadRepliesForComment(videoId, comment);
         }
       });
+      if (playbackMode.mode === "live") {
+        this.startLiveChat(videoId, video, playbackMode);
+      } else if (playbackMode.mode === "liveReplay") {
+        this.startLiveReplay(videoId, video, playbackMode);
+      } else {
+        this.startCommentTimeline(videoId, video);
+      }
+      this.scheduleToggleMount(0);
+    }
+
+    startCommentTimeline(videoId, video) {
       this.timelineScheduler = new window.YoutubiTimelineScheduler({
         layer: this.layer,
         video,
         autoRelease: false,
         onStateChange: (updates) => this.updateDebugState(updates)
       });
-      this.updateDebugState({ status: "mounted" });
+      this.updateDebugState({ status: "mounted", mode: "normal" });
       this.apiCommentSource = new window.YoutubiYouTubeCommentApiSource({
         videoId,
         maxComments: this.settings.preloadLimit,
@@ -228,7 +303,138 @@
         }
       });
       this.apiCommentSource.start();
-      this.scheduleToggleMount(0);
+    }
+
+    startLiveChat(videoId, video, playbackMode) {
+      this.realtimeScheduler = new window.YoutubiRealtimeScheduler({
+        layer: this.layer,
+        video,
+        onStateChange: (updates) => this.updateDebugState(updates)
+      });
+      this.updateDebugState({ status: "live-mounted", mode: "live" });
+      if (!playbackMode.continuation) {
+        this.updateDebugState({
+          liveChatStatus: "continuation-missing",
+          liveChatError: "live chat continuation missing for current video"
+        });
+        this.scheduleRebuild(1000);
+        return;
+      }
+
+      this.liveChatSource = new window.YoutubiYouTubeLiveChatSource({
+        videoId,
+        mode: "live",
+        continuation: playbackMode.continuation,
+        maxItems: this.settings.preloadLimit,
+        onChat: (chat) => {
+          if (!this.isCurrentVideo(videoId) || this.activeMode !== "live") {
+            return;
+          }
+
+          this.recordComment("liveChat");
+          if (this.realtimeScheduler) {
+            this.realtimeScheduler.addComment(chat);
+            this.updateDebugState({ status: "live-chat" });
+          }
+        },
+        onStatus: (status) => {
+          if (!this.isCurrentVideo(videoId) || this.activeMode !== "live") {
+            return;
+          }
+
+          this.updateLiveChatStatus(status);
+        }
+      });
+      this.liveChatSource.start();
+    }
+
+    startLiveReplay(videoId, video, playbackMode) {
+      this.timelineScheduler = new window.YoutubiTimelineScheduler({
+        layer: this.layer,
+        video,
+        autoRelease: false,
+        suppressInitialBacklog: true,
+        onStateChange: (updates) => this.updateDebugState(updates)
+      });
+      this.updateDebugState({ status: "live-replay-mounted", mode: "liveReplay" });
+      this.liveReplayLoadState = {
+        commentsDone: false,
+        chatDone: !playbackMode.continuation,
+        completed: false
+      };
+
+      this.apiCommentSource = new window.YoutubiYouTubeCommentApiSource({
+        videoId,
+        maxComments: this.settings.preloadLimit,
+        onComment: (comment) => {
+          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+            return;
+          }
+
+          this.recordComment("api");
+          if (this.timelineScheduler) {
+            this.timelineScheduler.addComment(comment);
+            this.updateDebugState({ status: "live-replay-comment" });
+          }
+        },
+        onStatus: (status) => {
+          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+            return;
+          }
+
+          this.updateDebugState({
+            apiStatus: status.status,
+            apiLoaded: status.loadedCount,
+            apiError: status.message || ""
+          });
+
+          if (this.isApiSuccessTerminalStatus(status.status) || status.status === "failed" || status.status === "config-missing") {
+            this.markLiveReplaySourceDone("comments", status.status);
+          }
+        }
+      });
+      this.apiCommentSource.start();
+
+      if (!playbackMode.continuation) {
+        this.updateDebugState({
+          liveChatStatus: "continuation-missing",
+          liveChatError: "live chat replay continuation missing for current video"
+        });
+        this.markLiveReplaySourceDone("chat", "continuation-missing");
+      } else {
+        this.liveChatSource = new window.YoutubiYouTubeLiveChatSource({
+          videoId,
+          mode: "liveReplay",
+          continuation: playbackMode.continuation,
+          maxItems: this.settings.preloadLimit,
+          video,
+          onChat: (chat) => {
+            if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+              return;
+            }
+
+            this.recordComment("liveChat");
+            if (this.timelineScheduler) {
+              this.timelineScheduler.addComment(chat);
+              this.updateDebugState({ status: "live-replay-chat" });
+            }
+          },
+          onStatus: (status) => {
+            if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+              return;
+            }
+
+            this.updateLiveChatStatus(status);
+            if (status.status === "replay-ready") {
+              this.markLiveReplaySourceDone("chat", status.status);
+            }
+            if (this.isLiveChatTerminalStatus(status.status)) {
+              this.markLiveReplaySourceDone("chat", status.status);
+            }
+          }
+        });
+        this.liveChatSource.start();
+      }
     }
 
     findPlayer() {
@@ -246,6 +452,34 @@
       return player.querySelector("video") || document.querySelector("video.html5-main-video") || document.querySelector("video");
     }
 
+    getPlayerVideoId(player) {
+      const candidates = [
+        () => player && typeof player.getVideoData === "function" ? player.getVideoData().video_id : "",
+        () => player && player.getAttribute ? player.getAttribute("data-video-id") : "",
+        () => {
+          const watchFlexy = document.querySelector("ytd-watch-flexy[video-id]");
+          return watchFlexy ? watchFlexy.getAttribute("video-id") : "";
+        }
+      ];
+
+      for (const read of candidates) {
+        try {
+          const value = read();
+          if (value) {
+            return String(value);
+          }
+        } catch (error) {
+          // Some YouTube player methods are unavailable during SPA transitions.
+        }
+      }
+
+      return "";
+    }
+
+    getActiveScheduler() {
+      return this.timelineScheduler || this.realtimeScheduler;
+    }
+
     getVideoId() {
       try {
         return new URL(location.href).searchParams.get("v") || "";
@@ -256,6 +490,413 @@
 
     isCurrentVideo(videoId) {
       return Boolean(videoId) && videoId === this.activeVideoId && videoId === this.getVideoId();
+    }
+
+    detectPlaybackMode(player, video, videoId) {
+      const innertube = window.YoutubiInnertube;
+      const playerData = this.getPlayerVideoData(player);
+      const playerVideoId = this.getVideoDataVideoId(playerData);
+      const playerResponseFromPlayer = this.getPlayerResponseFromPlayer(player);
+      const rawPlayerResponse = playerResponseFromPlayer ||
+        (innertube && innertube.extractPlayerResponse ? innertube.extractPlayerResponse() : null);
+      const rawPlayerResponseVideoId = this.getPlayerResponseVideoId(rawPlayerResponse);
+      const playerResponse = rawPlayerResponseVideoId === videoId ? rawPlayerResponse : null;
+      const rawInitialData = innertube && innertube.extractInitialData ? innertube.extractInitialData() : null;
+      const initialDataEvidence = this.getInitialDataVideoEvidence(rawInitialData, videoId);
+      const initialData = initialDataEvidence.hasCurrentVideo ? rawInitialData : null;
+      const currentPageData = this.getCurrentPageData(videoId);
+      const domLiveDetails = this.getDomLiveDetails(player, videoId);
+      const liveDetails = this.getLiveDetails(playerResponse, playerData, video, domLiveDetails);
+      const liveContinuation = this.findChatContinuation(currentPageData, { replay: false }) ||
+        this.findChatContinuation(initialData, { replay: false }) ||
+        this.findChatContinuation(playerResponse, { replay: false });
+      const replayContinuation = this.findChatContinuation(currentPageData, { replay: true }) ||
+        this.findChatContinuation(initialData, { replay: true }) ||
+        this.findChatContinuation(playerResponse, { replay: true });
+      const diagnostics = {
+        playerVideoId,
+        playerResponseSource: playerResponseFromPlayer ? "player" : "page",
+        playerResponseVideoId: rawPlayerResponseVideoId,
+        playerResponseTrusted: Boolean(playerResponse),
+        initialDataTrusted: Boolean(initialData),
+        initialDataHasCurrentVideo: initialDataEvidence.hasCurrentVideo,
+        initialDataHasOtherVideo: initialDataEvidence.hasOtherVideo,
+        currentPageDataTrusted: currentPageData.length > 0,
+        domLiveSource: domLiveDetails.source,
+        domLiveChatType: domLiveDetails.chatType,
+        domLiveChatSrc: domLiveDetails.chatSrc,
+        domWatchFlexyLive: domLiveDetails.watchFlexyLive,
+        domPlayerLive: domLiveDetails.playerLive,
+        hasExplicitLiveStatus: liveDetails.hasExplicitLiveStatus,
+        hasLiveContinuation: Boolean(liveContinuation && liveContinuation.token),
+        hasReplayContinuation: Boolean(replayContinuation && replayContinuation.token)
+      };
+
+      if (liveDetails.isLiveNow) {
+        return {
+          mode: "live",
+          modeReason: "player-live-now",
+          diagnostics,
+          liveDetails,
+          continuation: liveContinuation && liveContinuation.token,
+          continuationInfo: liveContinuation
+        };
+      }
+
+      const replayInfo = replayContinuation || (liveDetails.isLiveReplay ? liveContinuation : null);
+      if (replayInfo && replayInfo.token) {
+        return {
+          mode: "liveReplay",
+          modeReason: replayContinuation ? "live-replay-continuation" : "ended-live-continuation",
+          diagnostics,
+          liveDetails,
+          continuation: replayInfo.token,
+          continuationInfo: replayInfo
+        };
+      }
+
+      if (liveDetails.isLiveReplay) {
+        return {
+          mode: "liveReplay",
+          modeReason: "ended-live-metadata",
+          diagnostics,
+          liveDetails,
+          continuation: "",
+          continuationInfo: null
+        };
+      }
+
+      if (liveContinuation && liveContinuation.token) {
+        return {
+          mode: "live",
+          modeReason: "live-continuation",
+          diagnostics,
+          liveDetails: {
+            ...liveDetails,
+            isLiveNow: true,
+            isLiveContent: true
+          },
+          continuation: liveContinuation.token,
+          continuationInfo: liveContinuation
+        };
+      }
+
+      return {
+        mode: "normal",
+        modeReason: "normal-video",
+        diagnostics,
+        liveDetails,
+        continuation: "",
+        continuationInfo: null
+      };
+    }
+
+    shouldDelayNormalMode(playbackMode) {
+      if (!playbackMode || playbackMode.mode !== "normal") {
+        return false;
+      }
+
+      const diagnostics = playbackMode.diagnostics || {};
+      return !diagnostics.hasExplicitLiveStatus &&
+        !diagnostics.hasLiveContinuation &&
+        !diagnostics.hasReplayContinuation;
+    }
+
+    shouldRetryMountedLiveChat() {
+      return this.activeMode === "live" &&
+        !this.liveChatSource &&
+        this.debugState &&
+        this.debugState.liveChatStatus === "continuation-missing";
+    }
+
+    getPlayerVideoData(player) {
+      try {
+        return player && typeof player.getVideoData === "function" ? player.getVideoData() || {} : {};
+      } catch (error) {
+        return {};
+      }
+    }
+
+    getPlayerResponseFromPlayer(player) {
+      const candidates = [
+        () => player && typeof player.getPlayerResponse === "function" ? player.getPlayerResponse() : null,
+        () => {
+          const data = this.getPlayerVideoData(player);
+          return data && (data.player_response || data.playerResponse) || null;
+        }
+      ];
+
+      for (const read of candidates) {
+        try {
+          const value = read();
+          if (!value) {
+            continue;
+          }
+
+          if (typeof value === "string") {
+            return JSON.parse(value);
+          }
+
+          if (typeof value === "object") {
+            return value;
+          }
+        } catch (error) {
+          // Player APIs can be unavailable or partially initialized during navigation.
+        }
+      }
+
+      return null;
+    }
+
+    getVideoDataVideoId(playerData) {
+      return playerData && (playerData.video_id || playerData.videoId)
+        ? String(playerData.video_id || playerData.videoId)
+        : "";
+    }
+
+    getLiveDetails(playerResponse, playerData, video, domLiveDetails = {}) {
+      const innertube = window.YoutubiInnertube;
+      const getNested = innertube && innertube.getNested;
+      const videoDetails = getNested ? getNested(playerResponse, ["videoDetails"]) || {} : {};
+      const liveBroadcastDetails = getNested
+        ? getNested(playerResponse, ["microformat", "playerMicroformatRenderer", "liveBroadcastDetails"]) || {}
+        : {};
+      const liveStreamability = getNested
+        ? getNested(playerResponse, ["playabilityStatus", "liveStreamability"])
+        : null;
+      const duration = video && video.duration;
+      const durationLooksLive = duration != null && !isFiniteNumber(duration);
+      const hasEnded = Boolean(liveBroadcastDetails.endTimestamp);
+      const hasExplicitLiveStatus = Boolean(
+        domLiveDetails.isLiveContent ||
+        liveStreamability ||
+        liveBroadcastDetails.startTimestamp ||
+        liveBroadcastDetails.endTimestamp ||
+        videoDetails.isLive !== undefined ||
+        videoDetails.isLiveContent !== undefined ||
+        playerData.isLive !== undefined ||
+        playerData.isLiveContent !== undefined ||
+        liveBroadcastDetails.isLiveNow !== undefined
+      );
+      const isLiveNow = Boolean(
+        isTrueFlag(videoDetails.isLive) ||
+        isTrueFlag(playerData.isLive) ||
+        isTrueFlag(liveBroadcastDetails.isLiveNow) ||
+        domLiveDetails.isLiveNow ||
+        (liveStreamability && durationLooksLive)
+      );
+      const isLiveContent = Boolean(
+        isLiveNow ||
+        isTrueFlag(videoDetails.isLiveContent) ||
+        isTrueFlag(playerData.isLiveContent) ||
+        domLiveDetails.isLiveContent ||
+        liveBroadcastDetails.startTimestamp ||
+        hasEnded
+      );
+      const isLiveReplay = Boolean(domLiveDetails.isLiveReplay || (isLiveContent && !isLiveNow && hasEnded));
+
+      return {
+        isLiveNow,
+        isLiveContent,
+        isLiveReplay,
+        hasEnded,
+        startTimestamp: liveBroadcastDetails.startTimestamp || "",
+        endTimestamp: liveBroadcastDetails.endTimestamp || "",
+        durationLooksLive,
+        hasExplicitLiveStatus
+      };
+    }
+
+    findChatContinuation(data, options = {}) {
+      const innertube = window.YoutubiInnertube;
+      if (!data || !innertube || !innertube.findLiveChatContinuation) {
+        return null;
+      }
+
+      try {
+        return innertube.findLiveChatContinuation(data, options);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    getPlayerResponseVideoId(playerResponse) {
+      const innertube = window.YoutubiInnertube;
+      const getNested = innertube && innertube.getNested;
+      return getNested ? getNested(playerResponse, ["videoDetails", "videoId"]) || "" : "";
+    }
+
+    getInitialDataVideoEvidence(initialData, videoId) {
+      const innertube = window.YoutubiInnertube;
+      const evidence = {
+        hasCurrentVideo: false,
+        hasOtherVideo: false
+      };
+
+      if (!initialData || !videoId || !innertube || !innertube.walk) {
+        return evidence;
+      }
+
+      innertube.walk(initialData, (node) => {
+        const candidate = node.watchEndpoint && node.watchEndpoint.videoId;
+        if (!candidate) {
+          return undefined;
+        }
+
+        if (candidate === videoId) {
+          evidence.hasCurrentVideo = true;
+          return false;
+        }
+
+        evidence.hasOtherVideo = true;
+        return undefined;
+      });
+
+      return evidence;
+    }
+
+    getCurrentPageData(videoId) {
+      const data = [];
+      const nodes = [
+        this.getCurrentWatchFlexy(videoId),
+        document.querySelector("ytd-watch-metadata"),
+        document.querySelector("ytd-video-primary-info-renderer"),
+        document.querySelector("ytd-live-chat-frame")
+      ].filter(Boolean);
+      const properties = [
+        "data",
+        "playerData",
+        "playerResponse",
+        "watchNextResponse",
+        "response"
+      ];
+
+      nodes.forEach((node) => {
+        properties.forEach((property) => {
+          try {
+            const value = node[property];
+            if (value && typeof value === "object" && !data.includes(value)) {
+              data.push(value);
+            }
+          } catch (error) {
+            // YouTube custom element properties can be temporarily unavailable during navigation.
+          }
+        });
+      });
+
+      return data;
+    }
+
+    getDomLiveDetails(player, videoId) {
+      const chatFrame = this.getLiveChatFrameInfo(videoId);
+      const watchFlexyLive = this.hasLiveWatchFlexy(videoId);
+      const playerLive = this.hasVisibleLivePlayerUi(player);
+      const isLiveReplay = chatFrame.type === "replay";
+      const isLiveNow = chatFrame.type === "live" || watchFlexyLive || playerLive;
+      const sources = [];
+
+      if (chatFrame.type) {
+        sources.push(chatFrame.source);
+      }
+      if (watchFlexyLive) {
+        sources.push("watch-flexy");
+      }
+      if (playerLive) {
+        sources.push("player-ui");
+      }
+
+      return {
+        isLiveNow,
+        isLiveReplay,
+        isLiveContent: isLiveNow || isLiveReplay,
+        source: sources.join(","),
+        chatType: chatFrame.type,
+        chatSrc: chatFrame.src,
+        watchFlexyLive,
+        playerLive
+      };
+    }
+
+    getCurrentWatchFlexy(videoId) {
+      return Array.from(document.querySelectorAll("ytd-watch-flexy"))
+        .find((node) => node.getAttribute("video-id") === videoId) || null;
+    }
+
+    hasLiveWatchFlexy(videoId) {
+      const watchFlexy = this.getCurrentWatchFlexy(videoId);
+      if (!watchFlexy) {
+        return false;
+      }
+
+      return [
+        "is-live",
+        "is-live-now",
+        "is-live-stream",
+        "live"
+      ].some((attribute) => watchFlexy.hasAttribute(attribute));
+    }
+
+    hasVisibleLivePlayerUi(player) {
+      if (!player || typeof player.querySelectorAll !== "function") {
+        return false;
+      }
+
+      return Array.from(player.querySelectorAll(".ytp-live, .ytp-live-badge, .ytp-time-live"))
+        .some((node) => this.isVisibleElement(node));
+    }
+
+    getLiveChatFrameInfo(videoId) {
+      const frames = Array.from(document.querySelectorAll(
+        "iframe#chatframe, ytd-live-chat-frame iframe, iframe[src*='/live_chat']"
+      ));
+
+      for (const frame of frames) {
+        const src = frame.getAttribute("src") || "";
+        if (!src || !this.isLiveChatFrameForVideo(frame, src, videoId)) {
+          continue;
+        }
+
+        try {
+          const parsed = new URL(src, location.href);
+          if (parsed.pathname.includes("live_chat_replay")) {
+            return { type: "replay", source: "chatframe", src };
+          }
+
+          if (parsed.pathname.includes("live_chat")) {
+            return { type: "live", source: "chatframe", src };
+          }
+        } catch (error) {
+          if (src.includes("live_chat_replay")) {
+            return { type: "replay", source: "chatframe", src };
+          }
+
+          if (src.includes("live_chat")) {
+            return { type: "live", source: "chatframe", src };
+          }
+        }
+      }
+
+      return { type: "", source: "", src: "" };
+    }
+
+    isLiveChatFrameForVideo(frame, src, videoId) {
+      try {
+        const parsed = new URL(src, location.href);
+        const frameVideoId = parsed.searchParams.get("v") || "";
+        if (frameVideoId) {
+          return frameVideoId === videoId;
+        }
+      } catch (error) {
+        // Fall back to the enclosing watch page below.
+      }
+
+      const frameWatchFlexy = frame.closest && frame.closest("ytd-watch-flexy");
+      if (frameWatchFlexy && frameWatchFlexy.getAttribute("video-id")) {
+        return frameWatchFlexy.getAttribute("video-id") === videoId;
+      }
+
+      const watchFlexy = this.getCurrentWatchFlexy(videoId);
+      return Boolean(watchFlexy && watchFlexy.contains(frame));
     }
 
     applySettings(status) {
@@ -601,6 +1242,52 @@
       );
     }
 
+    isLiveChatTerminalStatus(status) {
+      return (
+        status === "done" ||
+        status === "max-items" ||
+        status === "continuation-missing" ||
+        status === "failed" ||
+        status === "config-missing"
+      );
+    }
+
+    markLiveReplaySourceDone(source, reason) {
+      if (!this.liveReplayLoadState || this.liveReplayLoadState.completed) {
+        return;
+      }
+
+      if (source === "comments") {
+        this.liveReplayLoadState.commentsDone = true;
+      } else if (source === "chat") {
+        this.liveReplayLoadState.chatDone = true;
+      }
+
+      this.updateDebugState({
+        status: `live-replay-${source}-done`,
+        liveReplayCommentsDone: this.liveReplayLoadState.commentsDone,
+        liveReplayChatDone: this.liveReplayLoadState.chatDone
+      });
+
+      if (!this.liveReplayLoadState.commentsDone || !this.liveReplayLoadState.chatDone) {
+        return;
+      }
+
+      this.liveReplayLoadState.completed = true;
+      if (this.timelineScheduler) {
+        this.timelineScheduler.completeInitialLoad(`live-replay:${reason || "done"}`);
+      }
+    }
+
+    updateLiveChatStatus(status = {}) {
+      this.updateDebugState({
+        liveChatStatus: status.status || "idle",
+        liveChatLoaded: status.loadedCount || 0,
+        liveChatError: status.message || "",
+        liveChatContinuation: status.continuation || this.debugState && this.debugState.liveChatContinuation || ""
+      });
+    }
+
     shouldUseDomFallback(status) {
       if (!status || typeof status !== "object") {
         return false;
@@ -681,10 +1368,44 @@
       this.commentSource.start();
     }
 
-    resetDebugState(videoId) {
+    resetDebugState(videoId, playbackMode = {}) {
+      const diagnostics = playbackMode.diagnostics || {};
+      const liveDetails = playbackMode.liveDetails || {};
       this.debugState = {
         status: "starting",
         videoId,
+        mode: playbackMode.mode || "normal",
+        modeReason: playbackMode.modeReason || "",
+        playerVideoId: diagnostics.playerVideoId || "",
+        playerResponseSource: diagnostics.playerResponseSource || "",
+        playerResponseVideoId: diagnostics.playerResponseVideoId || "",
+        playerResponseTrusted: Boolean(diagnostics.playerResponseTrusted),
+        initialDataTrusted: Boolean(diagnostics.initialDataTrusted),
+        initialDataHasCurrentVideo: Boolean(diagnostics.initialDataHasCurrentVideo),
+        initialDataHasOtherVideo: Boolean(diagnostics.initialDataHasOtherVideo),
+        currentPageDataTrusted: Boolean(diagnostics.currentPageDataTrusted),
+        domLiveSource: diagnostics.domLiveSource || "",
+        domLiveChatType: diagnostics.domLiveChatType || "",
+        domWatchFlexyLive: Boolean(diagnostics.domWatchFlexyLive),
+        domPlayerLive: Boolean(diagnostics.domPlayerLive),
+        isLiveNow: Boolean(liveDetails.isLiveNow),
+        isLiveContent: Boolean(liveDetails.isLiveContent),
+        isLiveReplay: Boolean(liveDetails.isLiveReplay),
+        liveHasEnded: Boolean(liveDetails.hasEnded),
+        hasExplicitLiveStatus: Boolean(liveDetails.hasExplicitLiveStatus),
+        liveStartTimestamp: liveDetails.startTimestamp || "",
+        liveEndTimestamp: liveDetails.endTimestamp || "",
+        liveChatStatus: "idle",
+        liveChatLoaded: 0,
+        liveChatQueued: 0,
+        liveChatDropped: 0,
+        liveChatError: "",
+        liveChatContinuation: playbackMode.continuation ? "found" : "",
+        liveChatContinuationSource: playbackMode.continuationInfo && playbackMode.continuationInfo.source || "",
+        hasLiveContinuation: Boolean(diagnostics.hasLiveContinuation),
+        hasReplayContinuation: Boolean(diagnostics.hasReplayContinuation),
+        liveReplayCommentsDone: false,
+        liveReplayChatDone: false,
         apiStatus: "idle",
         apiLoaded: 0,
         apiComments: 0,
@@ -707,6 +1428,8 @@
         this.debugState.apiComments += 1;
       } else if (source === "dom") {
         this.debugState.domComments += 1;
+      } else if (source === "liveChat") {
+        this.debugState.liveChatLoaded += 1;
       }
     }
 
@@ -715,14 +1438,21 @@
         return;
       }
 
-      const timelineComments = this.timelineScheduler && this.timelineScheduler.comments
-        ? this.timelineScheduler.comments.size
+      const scheduler = this.getActiveScheduler();
+      const timelineComments = scheduler && scheduler.comments
+        ? scheduler.comments.size
         : 0;
-      const timelineItems = this.timelineScheduler && this.timelineScheduler.timeline
-        ? this.timelineScheduler.timeline.length
+      const timelineItems = scheduler && scheduler.timeline
+        ? scheduler.timeline.length
         : 0;
       const layoutItems = this.layer && this.layer.layoutItems ? this.layer.layoutItems.length : 0;
       const renderedItems = this.layer && this.layer.nodes ? this.layer.nodes.size : 0;
+      const liveChatQueued = scheduler && typeof scheduler.countFutureItems === "function"
+        ? scheduler.countFutureItems(scheduler.getCurrentTime())
+        : this.debugState.liveChatQueued;
+      const liveChatDropped = scheduler && typeof scheduler.droppedCount === "number"
+        ? scheduler.droppedCount
+        : this.debugState.liveChatDropped;
 
       this.debugState = {
         ...this.debugState,
@@ -730,6 +1460,8 @@
         timelineItems,
         layoutItems,
         renderedItems,
+        liveChatQueued,
+        liveChatDropped,
         enabled: this.settings.enabled,
         ...updates
       };
@@ -750,20 +1482,40 @@
         this.apiCommentSource.dispose();
       }
 
+      if (this.liveChatSource) {
+        this.liveChatSource.dispose();
+      }
+
       if (this.timelineScheduler) {
         this.timelineScheduler.dispose();
+      }
+
+      if (this.realtimeScheduler) {
+        this.realtimeScheduler.dispose();
       }
 
       if (this.layer) {
         this.layer.dispose();
       }
 
+      this.removeOrphanLayers();
+
       this.commentSource = null;
       this.apiCommentSource = null;
+      this.liveChatSource = null;
       this.timelineScheduler = null;
+      this.realtimeScheduler = null;
+      this.liveReplayLoadState = null;
       this.layer = null;
       this.debugState = null;
       this.activeVideoId = "";
+      this.activeMode = "normal";
+    }
+
+    removeOrphanLayers() {
+      document.querySelectorAll("[data-youtubi-layer='true']").forEach((node) => {
+        node.remove();
+      });
     }
 
     disposeToggleButton() {

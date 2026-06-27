@@ -8,6 +8,13 @@
   const REPLAY_PAGE_DELAY_MS = 120;
   const REPLAY_BUFFER_AHEAD_SECONDS = 30;
   const REPLAY_POLL_MS = 750;
+  const INITIAL_CONTINUATION_RETRY_MS = 500;
+  const INITIAL_CONTINUATION_RETRY_COUNT = 16;
+  const CHAT_FRAME_SELECTORS = [
+    "iframe#chatframe",
+    "ytd-live-chat-frame iframe",
+    "iframe[src*='/live_chat']"
+  ].join(",");
 
   const innertube = window.YoutubiInnertube;
   const commentTime = window.YoutubiCommentTime || {
@@ -363,11 +370,14 @@
   };
 
   class YouTubeLiveChatSource {
-    constructor({ videoId, mode, continuation, maxItems, video, onChat, onStatus }) {
+    constructor({ videoId, mode, continuation, maxItems, initialContinuationRetryCount, video, onChat, onStatus }) {
       this.videoId = videoId;
       this.mode = mode === "liveReplay" ? "liveReplay" : "live";
       this.initialContinuation = continuation || "";
       this.maxItems = maxItems || 500;
+      this.initialContinuationRetryCount = Number.isFinite(Number(initialContinuationRetryCount))
+        ? Math.max(1, Math.floor(Number(initialContinuationRetryCount)))
+        : INITIAL_CONTINUATION_RETRY_COUNT;
       this.video = video || null;
       this.onChat = onChat;
       this.onStatus = onStatus;
@@ -418,14 +428,17 @@
 
         this.config = config;
         this.abortController = new AbortController();
-        const continuation = this.initialContinuation || this.findInitialContinuation();
+        const continuationInfo = await this.resolveInitialContinuation();
+        const continuation = continuationInfo && continuationInfo.token;
         if (!continuation) {
           this.reportStatus("continuation-missing");
           return;
         }
 
+        this.initialContinuation = continuation;
         this.reportStatus("ready", {
           continuation: "found",
+          continuationSource: continuationInfo.source || "",
           maxItems: this.maxItems
         });
 
@@ -650,25 +663,234 @@
       }
     }
 
+    async resolveInitialContinuation() {
+      if (this.initialContinuation) {
+        return {
+          token: this.initialContinuation,
+          source: "provided"
+        };
+      }
+
+      for (let attempt = 0; attempt < this.initialContinuationRetryCount; attempt += 1) {
+        if (this.disposed || !this.isCurrentPage()) {
+          return null;
+        }
+
+        const chatFrameInfo = await this.findChatFrameContinuation({
+          includeFallback: attempt === 0 || attempt === this.initialContinuationRetryCount - 1
+        });
+        if (chatFrameInfo && chatFrameInfo.token) {
+          return chatFrameInfo;
+        }
+
+        const topPageInfo = this.findInitialContinuationInfo();
+        if (topPageInfo && topPageInfo.token) {
+          return topPageInfo;
+        }
+
+        if (attempt === 0) {
+          this.reportStatus("continuation-waiting");
+        }
+
+        if (attempt < this.initialContinuationRetryCount - 1) {
+          await sleep(INITIAL_CONTINUATION_RETRY_MS);
+        }
+      }
+
+      return null;
+    }
+
     findInitialContinuation() {
+      const info = this.findInitialContinuationInfo();
+      return info && info.token ? info.token : "";
+    }
+
+    findInitialContinuationInfo() {
       const initialData = innertube.extractInitialData();
       const playerResponse = innertube.extractPlayerResponse();
       return (
-        this.findContinuationIn(initialData) ||
-        this.findContinuationIn(playerResponse) ||
-        ""
+        this.findContinuationInfoIn(this.isPlayerResponseForCurrentVideo(playerResponse) ? playerResponse : null, "top-player-response") ||
+        this.findContinuationInfoIn(this.hasCurrentVideoEvidence(initialData) ? initialData : null, "top-initial-data") ||
+        null
       );
     }
 
-    findContinuationIn(data) {
+    findContinuationInfoIn(data, source) {
       if (!data || !innertube.findLiveChatContinuation) {
-        return "";
+        return null;
       }
 
       const result = innertube.findLiveChatContinuation(data, {
         replay: this.mode === "liveReplay"
       });
-      return result && result.token ? result.token : "";
+      return result && result.token
+        ? {
+            token: result.token,
+            source: result.source || source || ""
+          }
+        : null;
+    }
+
+    isPlayerResponseForCurrentVideo(playerResponse) {
+      const videoId = getNested(playerResponse, ["videoDetails", "videoId"]);
+      return Boolean(videoId && videoId === this.videoId);
+    }
+
+    hasCurrentVideoEvidence(data) {
+      if (!data || !this.videoId) {
+        return false;
+      }
+
+      let found = false;
+      walk(data, (node) => {
+        const candidates = [
+          getNested(node, ["videoDetails", "videoId"]),
+          getNested(node, ["currentVideoEndpoint", "watchEndpoint", "videoId"])
+        ].filter(Boolean);
+
+        if (candidates.includes(this.videoId)) {
+          found = true;
+          return false;
+        }
+
+        return undefined;
+      });
+
+      return found;
+    }
+
+    async findChatFrameContinuation(options = {}) {
+      const frameUrl = this.findChatFrameUrl(options);
+      if (!frameUrl) {
+        return null;
+      }
+
+      const urlInfo = this.findContinuationInChatFrameUrl(frameUrl);
+      if (urlInfo) {
+        return urlInfo;
+      }
+
+      try {
+        const response = await fetch(frameUrl, {
+          credentials: "include",
+          signal: this.abortController && this.abortController.signal
+        });
+        if (!response.ok) {
+          return null;
+        }
+
+        const html = await response.text();
+        if (this.disposed || !this.isCurrentPage()) {
+          return null;
+        }
+
+        const data = this.extractInitialDataFromHtml(html);
+        const info = this.findContinuationInfoIn(data, "chatframe");
+        return info && info.token
+          ? {
+              ...info,
+              source: info.source || "chatframe"
+            }
+          : null;
+      } catch (error) {
+        if (isAbortError(error)) {
+          return null;
+        }
+
+        this.reportStatus("continuation-frame-failed", {
+          message: error && error.message ? error.message : String(error)
+        });
+        return null;
+      }
+    }
+
+    findChatFrameUrl(options = {}) {
+      const frames = Array.from(document.querySelectorAll(CHAT_FRAME_SELECTORS));
+
+      for (const frame of frames) {
+        const src = frame.getAttribute("src") || frame.src || "";
+        if (!src || !this.isChatFrameForCurrentVideo(frame, src)) {
+          continue;
+        }
+
+        try {
+          const parsed = new URL(src, location.href);
+          const isReplayFrame = parsed.pathname.includes("live_chat_replay");
+          const isLiveFrame = parsed.pathname.includes("live_chat") && !isReplayFrame;
+          if (this.mode === "liveReplay" ? isReplayFrame : isLiveFrame) {
+            return parsed.href;
+          }
+        } catch (error) {
+          const isReplayFrame = src.includes("live_chat_replay");
+          const isLiveFrame = src.includes("live_chat") && !isReplayFrame;
+          if (this.mode === "liveReplay" ? isReplayFrame : isLiveFrame) {
+            return src;
+          }
+        }
+      }
+
+      if (options.includeFallback && this.mode === "live" && this.videoId) {
+        const fallbackUrl = new URL("/live_chat", location.origin);
+        fallbackUrl.searchParams.set("is_popout", "1");
+        fallbackUrl.searchParams.set("v", this.videoId);
+        fallbackUrl.searchParams.set("embed_domain", location.hostname);
+        return fallbackUrl.href;
+      }
+
+      return "";
+    }
+
+    isChatFrameForCurrentVideo(frame, src) {
+      try {
+        const parsed = new URL(src, location.href);
+        const frameVideoId = parsed.searchParams.get("v") || "";
+        if (frameVideoId) {
+          return frameVideoId === this.videoId;
+        }
+      } catch (error) {
+        // Fall back to the enclosing watch page below.
+      }
+
+      const frameWatchFlexy = frame.closest && frame.closest("ytd-watch-flexy");
+      if (frameWatchFlexy && frameWatchFlexy.getAttribute("video-id")) {
+        return frameWatchFlexy.getAttribute("video-id") === this.videoId;
+      }
+
+      const watchFlexy = Array.from(document.querySelectorAll("ytd-watch-flexy[video-id]"))
+        .find((node) => node.getAttribute("video-id") === this.videoId);
+      return Boolean(watchFlexy && watchFlexy.contains(frame));
+    }
+
+    findContinuationInChatFrameUrl(frameUrl) {
+      try {
+        const parsed = new URL(frameUrl, location.href);
+        const token =
+          parsed.searchParams.get("continuation") ||
+          parsed.searchParams.get("c") ||
+          "";
+        return token
+          ? {
+              token,
+              source: "chatframe-url"
+            }
+          : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    extractInitialDataFromHtml(html) {
+      if (!html || typeof html !== "string" || !innertube.parseJsonAfter) {
+        return null;
+      }
+
+      return (
+        innertube.parseJsonAfter(html, "ytInitialData =") ||
+        innertube.parseJsonAfter(html, "var ytInitialData =") ||
+        innertube.parseJsonAfter(html, "window[\"ytInitialData\"] =") ||
+        innertube.parseJsonAfter(html, "window.ytInitialData =") ||
+        null
+      );
     }
 
     reportStatus(status, details = {}) {

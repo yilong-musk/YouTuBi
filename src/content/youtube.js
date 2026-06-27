@@ -41,6 +41,10 @@
   const isTrueFlag = (value) => value === true || value === "true" || value === 1 || value === "1";
   const MODE_DETECTION_RETRY_MS = 250;
   const NORMAL_MODE_DETECTION_RETRY_COUNT = 20;
+  const LIVE_CHAT_RETRY_LIMIT = 4;
+  const LIVE_CHAT_RETRY_BASE_MS = 2000;
+  const LIVE_CHAT_RETRY_MAX_MS = 30000;
+  const LIVE_REPLAY_PENDING_CHAT_RETRY_COUNT = 4;
 
   class YoutubiApp {
     constructor() {
@@ -69,6 +73,7 @@
       this.activeVideoId = "";
       this.activeMode = "normal";
       this.debugState = null;
+      this.liveChatRetryState = new Map();
       this.boundRouteChanged = () => this.handleRouteChanged();
     }
 
@@ -137,8 +142,16 @@
         return true;
       }
 
+      if (this.shouldRetryMountedLiveChat()) {
+        return true;
+      }
+
       const player = this.findPlayer();
       if (player && player !== this.layer.playerElement) {
+        return true;
+      }
+
+      if (this.shouldRetryMountedPlaybackMode(player, null, videoId)) {
         return true;
       }
 
@@ -205,7 +218,8 @@
         this.layer.playerElement === player &&
         activeScheduler.video === video &&
         this.lastUrl === currentUrl &&
-        !this.shouldRetryMountedLiveChat()
+        !this.shouldRetryMountedLiveChat() &&
+        !this.shouldRetryMountedPlaybackMode(player, video, videoId)
       ) {
         return;
       }
@@ -314,11 +328,9 @@
       this.updateDebugState({ status: "live-mounted", mode: "live" });
       if (!playbackMode.continuation) {
         this.updateDebugState({
-          liveChatStatus: "continuation-missing",
-          liveChatError: "live chat continuation missing for current video"
+          liveChatStatus: "continuation-pending",
+          liveChatError: ""
         });
-        this.scheduleRebuild(1000);
-        return;
       }
 
       this.liveChatSource = new window.YoutubiYouTubeLiveChatSource({
@@ -359,7 +371,7 @@
       this.updateDebugState({ status: "live-replay-mounted", mode: "liveReplay" });
       this.liveReplayLoadState = {
         commentsDone: false,
-        chatDone: !playbackMode.continuation,
+        chatDone: false,
         completed: false
       };
 
@@ -397,44 +409,44 @@
 
       if (!playbackMode.continuation) {
         this.updateDebugState({
-          liveChatStatus: "continuation-missing",
-          liveChatError: "live chat replay continuation missing for current video"
+          liveChatStatus: "continuation-pending",
+          liveChatError: ""
         });
-        this.markLiveReplaySourceDone("chat", "continuation-missing");
-      } else {
-        this.liveChatSource = new window.YoutubiYouTubeLiveChatSource({
-          videoId,
-          mode: "liveReplay",
-          continuation: playbackMode.continuation,
-          maxItems: this.settings.preloadLimit,
-          video,
-          onChat: (chat) => {
-            if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
-              return;
-            }
-
-            this.recordComment("liveChat");
-            if (this.timelineScheduler) {
-              this.timelineScheduler.addComment(chat);
-              this.updateDebugState({ status: "live-replay-chat" });
-            }
-          },
-          onStatus: (status) => {
-            if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
-              return;
-            }
-
-            this.updateLiveChatStatus(status);
-            if (status.status === "replay-ready") {
-              this.markLiveReplaySourceDone("chat", status.status);
-            }
-            if (this.isLiveChatTerminalStatus(status.status)) {
-              this.markLiveReplaySourceDone("chat", status.status);
-            }
-          }
-        });
-        this.liveChatSource.start();
       }
+
+      this.liveChatSource = new window.YoutubiYouTubeLiveChatSource({
+        videoId,
+        mode: "liveReplay",
+        continuation: playbackMode.continuation,
+        initialContinuationRetryCount: playbackMode.continuation ? undefined : LIVE_REPLAY_PENDING_CHAT_RETRY_COUNT,
+        maxItems: this.settings.preloadLimit,
+        video,
+        onChat: (chat) => {
+          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+            return;
+          }
+
+          this.recordComment("liveChat");
+          if (this.timelineScheduler) {
+            this.timelineScheduler.addComment(chat);
+            this.updateDebugState({ status: "live-replay-chat" });
+          }
+        },
+        onStatus: (status) => {
+          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+            return;
+          }
+
+          this.updateLiveChatStatus(status);
+          if (status.status === "replay-ready") {
+            this.markLiveReplaySourceDone("chat", status.status);
+          }
+          if (this.isLiveChatTerminalStatus(status.status)) {
+            this.markLiveReplaySourceDone("chat", status.status);
+          }
+        }
+      });
+      this.liveChatSource.start();
     }
 
     findPlayer() {
@@ -508,10 +520,8 @@
       const domLiveDetails = this.getDomLiveDetails(player, videoId);
       const liveDetails = this.getLiveDetails(playerResponse, playerData, video, domLiveDetails);
       const liveContinuation = this.findChatContinuation(currentPageData, { replay: false }) ||
-        this.findChatContinuation(initialData, { replay: false }) ||
         this.findChatContinuation(playerResponse, { replay: false });
       const replayContinuation = this.findChatContinuation(currentPageData, { replay: true }) ||
-        this.findChatContinuation(initialData, { replay: true }) ||
         this.findChatContinuation(playerResponse, { replay: true });
       const diagnostics = {
         playerVideoId,
@@ -603,10 +613,75 @@
     }
 
     shouldRetryMountedLiveChat() {
-      return this.activeMode === "live" &&
-        !this.liveChatSource &&
-        this.debugState &&
-        this.debugState.liveChatStatus === "continuation-missing";
+      if (
+        this.activeMode !== "live" ||
+        !this.debugState ||
+        this.debugState.liveChatStatus !== "continuation-missing"
+      ) {
+        return false;
+      }
+
+      const state = this.liveChatRetryState.get(this.activeVideoId);
+      if (!state || state.attempts >= LIVE_CHAT_RETRY_LIMIT) {
+        return false;
+      }
+
+      return Date.now() >= state.nextRetryAt;
+    }
+
+    recordLiveChatContinuationMissing() {
+      if (!this.activeVideoId || this.activeMode !== "live") {
+        return;
+      }
+
+      const previous = this.liveChatRetryState.get(this.activeVideoId) || {
+        attempts: 0,
+        nextRetryAt: 0
+      };
+      const attempts = previous.attempts + 1;
+      const delay = Math.min(
+        LIVE_CHAT_RETRY_MAX_MS,
+        LIVE_CHAT_RETRY_BASE_MS * (2 ** Math.max(0, attempts - 1))
+      );
+
+      this.liveChatRetryState.set(this.activeVideoId, {
+        attempts,
+        nextRetryAt: Date.now() + delay
+      });
+      this.trimLiveChatRetryState();
+    }
+
+    clearLiveChatContinuationRetry() {
+      if (this.activeVideoId) {
+        this.liveChatRetryState.delete(this.activeVideoId);
+      }
+    }
+
+    trimLiveChatRetryState() {
+      if (this.liveChatRetryState.size <= 12) {
+        return;
+      }
+
+      const firstKey = this.liveChatRetryState.keys().next().value;
+      if (firstKey) {
+        this.liveChatRetryState.delete(firstKey);
+      }
+    }
+
+    shouldRetryMountedPlaybackMode(player, video, videoId) {
+      if (!this.activeVideoId || this.activeVideoId !== videoId || this.activeMode !== "normal") {
+        return false;
+      }
+
+      const domLiveDetails = this.getDomLiveDetails(player, videoId);
+      if (domLiveDetails.isLiveContent) {
+        return true;
+      }
+
+      const playerData = this.getPlayerVideoData(player);
+      const playerResponse = this.getPlayerResponseFromPlayer(player);
+      const liveDetails = this.getLiveDetails(playerResponse, playerData, video, domLiveDetails);
+      return Boolean(liveDetails.isLiveContent || liveDetails.isLiveNow || liveDetails.isLiveReplay);
     }
 
     getPlayerVideoData(player) {
@@ -757,12 +832,8 @@
 
     getCurrentPageData(videoId) {
       const data = [];
-      const nodes = [
-        this.getCurrentWatchFlexy(videoId),
-        document.querySelector("ytd-watch-metadata"),
-        document.querySelector("ytd-video-primary-info-renderer"),
-        document.querySelector("ytd-live-chat-frame")
-      ].filter(Boolean);
+      const watchFlexy = this.getCurrentWatchFlexy(videoId);
+      const nodes = [];
       const properties = [
         "data",
         "playerData",
@@ -770,6 +841,17 @@
         "watchNextResponse",
         "response"
       ];
+
+      if (watchFlexy) {
+        nodes.push(
+          watchFlexy,
+          ...Array.from(watchFlexy.querySelectorAll([
+            "ytd-watch-metadata",
+            "ytd-video-primary-info-renderer",
+            "ytd-live-chat-frame"
+          ].join(",")))
+        );
+      }
 
       nodes.forEach((node) => {
         properties.forEach((property) => {
@@ -1280,11 +1362,27 @@
     }
 
     updateLiveChatStatus(status = {}) {
+      if (status.status === "continuation-missing") {
+        this.recordLiveChatContinuationMissing();
+      } else if (
+        status.status === "ready" ||
+        status.status === "baseline" ||
+        status.status === "polling" ||
+        status.status === "replay-ready" ||
+        status.status === "replay-buffer"
+      ) {
+        this.clearLiveChatContinuationRetry();
+      }
+
+      const retryState = this.activeVideoId ? this.liveChatRetryState.get(this.activeVideoId) : null;
       this.updateDebugState({
         liveChatStatus: status.status || "idle",
         liveChatLoaded: status.loadedCount || 0,
         liveChatError: status.message || "",
-        liveChatContinuation: status.continuation || this.debugState && this.debugState.liveChatContinuation || ""
+        liveChatContinuation: status.continuation || this.debugState && this.debugState.liveChatContinuation || "",
+        liveChatContinuationSource:
+          status.continuationSource || this.debugState && this.debugState.liveChatContinuationSource || "",
+        liveChatRetryCount: retryState ? retryState.attempts : 0
       });
     }
 
@@ -1402,6 +1500,7 @@
         liveChatError: "",
         liveChatContinuation: playbackMode.continuation ? "found" : "",
         liveChatContinuationSource: playbackMode.continuationInfo && playbackMode.continuationInfo.source || "",
+        liveChatRetryCount: 0,
         hasLiveContinuation: Boolean(diagnostics.hasLiveContinuation),
         hasReplayContinuation: Boolean(diagnostics.hasReplayContinuation),
         liveReplayCommentsDone: false,
@@ -1553,6 +1652,7 @@
         this.unsubscribeSettings();
       }
 
+      this.liveChatRetryState.clear();
       this.disposePage();
     }
   }

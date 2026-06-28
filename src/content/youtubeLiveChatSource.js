@@ -8,8 +8,11 @@
   const REPLAY_PAGE_DELAY_MS = 120;
   const REPLAY_BUFFER_AHEAD_SECONDS = 30;
   const REPLAY_POLL_MS = 750;
+  const REPLAY_REQUEST_BUCKET_MS = 2000;
   const INITIAL_CONTINUATION_RETRY_MS = 500;
   const INITIAL_CONTINUATION_RETRY_COUNT = 16;
+  const FETCH_RETRY_BASE_MS = 1000;
+  const FETCH_RETRY_MAX_MS = 30000;
   const CHAT_FRAME_SELECTORS = [
     "iframe#chatframe",
     "ytd-live-chat-frame iframe",
@@ -387,13 +390,18 @@
       this.config = null;
       this.loadedCount = 0;
       this.order = 0;
+      this.fetchFailureCount = 0;
       this.seen = new Set();
       this.baselinePending = this.mode === "live";
       this.replayContinuation = "";
-      this.replaySeenContinuations = new Set();
+      this.replaySeenRequestKeys = new Set();
       this.replayBufferedUntil = 0;
       this.replayEpoch = 0;
       this.replayReady = false;
+      this.lastContinuationDiagnostics = null;
+      this.lastContinuationFrameStatus = null;
+      this.lastContinuationWatchStatus = null;
+      this.lastContinuationNextStatus = null;
       this.boundReplaySeek = () => this.handleReplaySeek();
     }
 
@@ -431,7 +439,7 @@
         const continuationInfo = await this.resolveInitialContinuation();
         const continuation = continuationInfo && continuationInfo.token;
         if (!continuation) {
-          this.reportStatus("continuation-missing");
+          this.reportStatus("continuation-missing", this.getContinuationDiagnostics());
           return;
         }
 
@@ -452,6 +460,13 @@
           return;
         }
 
+        if (this.loadedCount === 0 && this.isInvalidContinuationError(error)) {
+          this.reportStatus("continuation-rejected", {
+            message: error && error.message ? error.message : String(error)
+          });
+          return;
+        }
+
         this.reportStatus("failed", { message: error && error.message ? error.message : String(error) });
         console.info("[Youtubi] YouTube live chat source failed", error);
       }
@@ -461,7 +476,7 @@
       let continuation = firstContinuation;
 
       while (!this.disposed && continuation) {
-        const response = await this.fetchChat(continuation);
+        const response = await this.fetchChatWithRecovery(continuation);
         if (this.disposed || !response || !this.isCurrentPage()) {
           return;
         }
@@ -480,7 +495,7 @@
           this.emitChats(chats);
         }
 
-        const continuationInfo = innertube.getLiveChatContinuation(response);
+        const continuationInfo = innertube.getLiveChatContinuation(response, { replay: false });
         continuation = continuationInfo.token;
         const delay = clamp(
           Number(continuationInfo.timeoutMs) || LIVE_DEFAULT_POLL_MS,
@@ -517,14 +532,14 @@
         ) {
           const epoch = this.replayEpoch;
           const continuation = this.replayContinuation;
-          if (this.replaySeenContinuations.has(continuation)) {
-            this.replayContinuation = "";
+          const playerOffsetMs = Math.floor(this.getVideoTime() * 1000);
+          const requestKey = this.getReplayRequestKey(continuation, playerOffsetMs);
+          if (this.replaySeenRequestKeys.has(requestKey)) {
             break;
           }
-          this.replaySeenContinuations.add(continuation);
 
-          const response = await this.fetchChat(continuation, {
-            playerOffsetMs: Math.floor(this.getVideoTime() * 1000)
+          const response = await this.fetchChatWithRecovery(continuation, {
+            playerOffsetMs
           });
           if (this.disposed || !response || !this.isCurrentPage()) {
             return;
@@ -533,6 +548,9 @@
           if (epoch !== this.replayEpoch) {
             break;
           }
+
+          this.replaySeenRequestKeys.add(requestKey);
+          this.trimReplaySeenRequestKeys();
 
           const chats = extractChats(response, this.order, this.mode)
             .filter((chat) => Number.isFinite(chat.appearAt));
@@ -543,9 +561,9 @@
 
           this.emitChats(chats);
 
-          const continuationInfo = innertube.getLiveChatContinuation(response);
-          this.replayContinuation = continuationInfo.token || innertube.findNextContinuation(response);
-          this.reportReplayReady();
+          const continuationInfo = innertube.getLiveChatContinuation(response, { replay: true });
+          this.replayContinuation = continuationInfo.token || innertube.findNextContinuation(response, { replay: true });
+          this.reportReplayReady(targetBufferedUntil);
           this.reportStatus("replay-buffer", {
             loadedCount: this.loadedCount,
             bufferedUntil: Math.round(this.replayBufferedUntil),
@@ -572,8 +590,16 @@
       }
     }
 
-    reportReplayReady() {
+    reportReplayReady(targetBufferedUntil) {
       if (this.replayReady) {
+        return;
+      }
+
+      if (
+        this.replayContinuation &&
+        Number.isFinite(targetBufferedUntil) &&
+        this.replayBufferedUntil < targetBufferedUntil
+      ) {
         return;
       }
 
@@ -599,12 +625,35 @@
 
       this.replayEpoch += 1;
       this.replayContinuation = this.initialContinuation || this.findInitialContinuation();
-      this.replaySeenContinuations.clear();
+      this.replaySeenRequestKeys.clear();
       this.replayBufferedUntil = this.getVideoTime();
+      this.replayReady = false;
       this.reportStatus("replay-seek", {
         loadedCount: this.loadedCount,
         playerTime: Math.round(this.getVideoTime())
       });
+    }
+
+    getReplayRequestKey(continuation, playerOffsetMs) {
+      const bucket = Math.floor(Math.max(0, Number(playerOffsetMs) || 0) / REPLAY_REQUEST_BUCKET_MS);
+      return `${continuation || ""}|${bucket}`;
+    }
+
+    trimReplaySeenRequestKeys() {
+      if (this.replaySeenRequestKeys.size <= 1200) {
+        return;
+      }
+
+      const overflow = this.replaySeenRequestKeys.size - 900;
+      const iterator = this.replaySeenRequestKeys.values();
+      for (let index = 0; index < overflow; index += 1) {
+        const next = iterator.next();
+        if (next.done) {
+          break;
+        }
+
+        this.replaySeenRequestKeys.delete(next.value);
+      }
     }
 
     getVideoTime() {
@@ -626,6 +675,79 @@
           this.onChat(chat);
         }
       }
+    }
+
+    async fetchChatWithRecovery(continuation, options = {}) {
+      while (!this.disposed && this.isCurrentPage()) {
+        try {
+          const response = await this.fetchChat(continuation, options);
+          if (this.fetchFailureCount > 0) {
+            this.reportStatus("recovered", {
+              retryCount: this.fetchFailureCount,
+              loadedCount: this.loadedCount
+            });
+          }
+          this.fetchFailureCount = 0;
+          return response;
+        } catch (error) {
+          if (this.disposed || isAbortError(error) || !this.isCurrentPage()) {
+            return null;
+          }
+
+          if (!this.isRecoverableFetchError(error)) {
+            throw error;
+          }
+
+          this.fetchFailureCount += 1;
+          const retryDelayMs = this.getFetchRetryDelay(this.fetchFailureCount);
+          this.reportStatus("recovering", {
+            retryCount: this.fetchFailureCount,
+            retryDelayMs,
+            message: error && error.message ? error.message : String(error)
+          });
+          await sleep(retryDelayMs);
+        }
+      }
+
+      return null;
+    }
+
+    isRecoverableFetchError(error) {
+      const status = this.getHttpStatusFromError(error);
+      if (Number.isFinite(status)) {
+        return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+      }
+
+      if (error && error.name === "TypeError") {
+        return true;
+      }
+
+      const message = String(error && error.message ? error.message : error || "").toLowerCase();
+      return (
+        message.includes("failed to fetch") ||
+        message.includes("network") ||
+        message.includes("load failed") ||
+        message.includes("timeout") ||
+        message.includes("timed out") ||
+        message.includes("offline")
+      );
+    }
+
+    isInvalidContinuationError(error) {
+      return this.getHttpStatusFromError(error) === 400;
+    }
+
+    getHttpStatusFromError(error) {
+      const message = String(error && error.message ? error.message : error || "");
+      const match =
+        message.match(/\bfailed:\s*(\d{3})\b/i) ||
+        message.match(/\bstatus\s*[:=]?\s*(\d{3})\b/i);
+      return match ? Number(match[1]) : Number.NaN;
+    }
+
+    getFetchRetryDelay(attempt) {
+      const exponent = Math.min(5, Math.max(0, attempt - 1));
+      return clamp(FETCH_RETRY_BASE_MS * (2 ** exponent), FETCH_RETRY_BASE_MS, FETCH_RETRY_MAX_MS);
     }
 
     async fetchChat(continuation, options = {}) {
@@ -676,6 +798,11 @@
           return null;
         }
 
+        this.lastContinuationDiagnostics = this.getContinuationDiagnostics({
+          attempt,
+          attempts: this.initialContinuationRetryCount
+        });
+
         const chatFrameInfo = await this.findChatFrameContinuation({
           includeFallback: attempt === 0 || attempt === this.initialContinuationRetryCount - 1
         });
@@ -686,6 +813,20 @@
         const topPageInfo = this.findInitialContinuationInfo();
         if (topPageInfo && topPageInfo.token) {
           return topPageInfo;
+        }
+
+        if (attempt === 0 || attempt === this.initialContinuationRetryCount - 1) {
+          const watchNextInfo = await this.findWatchNextContinuationInfo();
+          if (watchNextInfo && watchNextInfo.token) {
+            return watchNextInfo;
+          }
+        }
+
+        if (this.mode === "liveReplay" && (attempt === 0 || attempt === this.initialContinuationRetryCount - 1)) {
+          const watchPageInfo = await this.findWatchPageContinuationInfo();
+          if (watchPageInfo && watchPageInfo.token) {
+            return watchPageInfo;
+          }
         }
 
         if (attempt === 0) {
@@ -700,12 +841,39 @@
       return null;
     }
 
+    getContinuationDiagnostics(details = {}) {
+      const currentPageData = this.getCurrentPageData();
+      const initialData = innertube.extractInitialData();
+      const playerResponse = innertube.extractPlayerResponse();
+      const chatFrameUrl = this.findChatFrameUrl({ includeFallback: false });
+
+      return {
+        ...details,
+        currentPageDataCount: currentPageData.length,
+        hasCurrentPageData: currentPageData.length > 0,
+        hasTopInitialDataForVideo: this.hasCurrentVideoEvidence(initialData),
+        hasPlayerResponseForVideo: this.isPlayerResponseForCurrentVideo(playerResponse),
+        hasChatFrame: Boolean(chatFrameUrl),
+        lastFrameStatus: this.lastContinuationFrameStatus || null,
+        lastNextStatus: this.lastContinuationNextStatus || null,
+        lastWatchStatus: this.lastContinuationWatchStatus || null,
+        lastProbe: Object.prototype.hasOwnProperty.call(details, "attempt")
+          ? null
+          : this.lastContinuationDiagnostics || null
+      };
+    }
+
     findInitialContinuation() {
       const info = this.findInitialContinuationInfo();
       return info && info.token ? info.token : "";
     }
 
     findInitialContinuationInfo() {
+      const currentPageInfo = this.findCurrentPageContinuationInfo();
+      if (currentPageInfo && currentPageInfo.token) {
+        return currentPageInfo;
+      }
+
       const initialData = innertube.extractInitialData();
       const playerResponse = innertube.extractPlayerResponse();
       return (
@@ -721,7 +889,8 @@
       }
 
       const result = innertube.findLiveChatContinuation(data, {
-        replay: this.mode === "liveReplay"
+        replay: this.mode === "liveReplay",
+        allowContinuationData: source === "chatframe" || source === "watch-page"
       });
       return result && result.token
         ? {
@@ -729,6 +898,168 @@
             source: result.source || source || ""
           }
         : null;
+    }
+
+    findCurrentPageContinuationInfo() {
+      for (const data of this.getCurrentPageData()) {
+        const info = this.findContinuationInfoIn(data, "current-page-data");
+        if (info && info.token) {
+          return info;
+        }
+      }
+
+      return null;
+    }
+
+    getCurrentPageData() {
+      const data = [];
+      const watchFlexy = this.getCurrentWatchFlexy();
+      const nodes = [];
+      const properties = [
+        "data",
+        "playerData",
+        "playerResponse",
+        "watchNextResponse",
+        "response"
+      ];
+
+      if (watchFlexy) {
+        nodes.push(
+          watchFlexy,
+          ...Array.from(watchFlexy.querySelectorAll([
+            "ytd-watch-metadata",
+            "ytd-video-primary-info-renderer",
+            "ytd-live-chat-frame"
+          ].join(",")))
+        );
+      }
+
+      nodes.forEach((node) => {
+        properties.forEach((property) => {
+          try {
+            const value = node[property];
+            if (value && typeof value === "object" && !data.includes(value)) {
+              data.push(value);
+            }
+          } catch (error) {
+            // YouTube custom element properties can be temporarily unavailable during SPA transitions.
+          }
+        });
+      });
+
+      return data;
+    }
+
+    getCurrentWatchFlexy() {
+      const watchFlexies = Array.from(document.querySelectorAll("ytd-watch-flexy"));
+      const exact = watchFlexies.find((node) => node.getAttribute("video-id") === this.videoId);
+      if (exact) {
+        return exact;
+      }
+
+      if (!this.isCurrentPage()) {
+        return null;
+      }
+
+      return watchFlexies.find((node) => {
+        const nodeVideoId = node.getAttribute("video-id") || "";
+        return node.isConnected && (!nodeVideoId || nodeVideoId === this.videoId);
+      }) || null;
+    }
+
+    async findWatchNextContinuationInfo() {
+      if (!this.config || !innertube.fetchNext) {
+        return null;
+      }
+
+      try {
+        const response = await innertube.fetchNext(
+          this.config,
+          {
+            videoId: this.videoId,
+            contentCheckOk: true,
+            racyCheckOk: true
+          },
+          this.abortController && this.abortController.signal
+        );
+        const info = this.findContinuationInfoIn(response, "watch-next");
+        this.lastContinuationNextStatus = {
+          status: "ok",
+          hasContinuation: Boolean(info && info.token)
+        };
+        return info;
+      } catch (error) {
+        if (isAbortError(error)) {
+          return null;
+        }
+
+        this.lastContinuationNextStatus = {
+          status: "failed",
+          message: error && error.message ? error.message : String(error)
+        };
+        return null;
+      }
+    }
+
+    async findWatchPageContinuationInfo() {
+      try {
+        const watchUrl = new URL("/watch", location.origin);
+        watchUrl.searchParams.set("v", this.videoId);
+        const response = await fetch(watchUrl.href, {
+          credentials: "include",
+          signal: this.abortController && this.abortController.signal
+        });
+        this.lastContinuationWatchStatus = {
+          status: response.ok ? "http-ok" : "http-failed",
+          httpStatus: response.status
+        };
+        if (!response.ok) {
+          return null;
+        }
+
+        const html = await response.text();
+        if (this.disposed || !this.isCurrentPage()) {
+          return null;
+        }
+
+        const initialData = this.extractInitialDataFromHtml(html);
+        const initialHasVideoEvidence = this.hasCurrentVideoEvidence(initialData);
+        const initialInfo = initialHasVideoEvidence
+          ? this.findContinuationInfoIn(initialData, "watch-page")
+          : null;
+        this.lastContinuationWatchStatus = {
+          ...this.lastContinuationWatchStatus,
+          hasInitialData: Boolean(initialData),
+          initialHasVideoEvidence,
+          hasInitialContinuation: Boolean(initialInfo && initialInfo.token)
+        };
+        if (initialInfo && initialInfo.token) {
+          return initialInfo;
+        }
+
+        const playerResponse = this.extractPlayerResponseFromHtml(html);
+        const playerResponseForVideo = this.isPlayerResponseForCurrentVideo(playerResponse);
+        const playerInfo = playerResponseForVideo
+          ? this.findContinuationInfoIn(playerResponse, "watch-page")
+          : null;
+        this.lastContinuationWatchStatus = {
+          ...this.lastContinuationWatchStatus,
+          hasPlayerResponse: Boolean(playerResponse),
+          playerResponseForVideo,
+          hasPlayerContinuation: Boolean(playerInfo && playerInfo.token)
+        };
+        return playerInfo;
+      } catch (error) {
+        if (isAbortError(error)) {
+          return null;
+        }
+
+        this.lastContinuationWatchStatus = {
+          status: "fetch-failed",
+          message: error && error.message ? error.message : String(error)
+        };
+        return null;
+      }
     }
 
     isPlayerResponseForCurrentVideo(playerResponse) {
@@ -745,7 +1076,8 @@
       walk(data, (node) => {
         const candidates = [
           getNested(node, ["videoDetails", "videoId"]),
-          getNested(node, ["currentVideoEndpoint", "watchEndpoint", "videoId"])
+          getNested(node, ["currentVideoEndpoint", "watchEndpoint", "videoId"]),
+          getNested(node, ["watchEndpoint", "videoId"])
         ].filter(Boolean);
 
         if (candidates.includes(this.videoId)) {
@@ -762,11 +1094,19 @@
     async findChatFrameContinuation(options = {}) {
       const frameUrl = this.findChatFrameUrl(options);
       if (!frameUrl) {
+        this.lastContinuationFrameStatus = {
+          status: "missing-url",
+          includeFallback: Boolean(options.includeFallback)
+        };
         return null;
       }
 
       const urlInfo = this.findContinuationInChatFrameUrl(frameUrl);
       if (urlInfo) {
+        this.lastContinuationFrameStatus = {
+          status: "url-token",
+          includeFallback: Boolean(options.includeFallback)
+        };
         return urlInfo;
       }
 
@@ -775,6 +1115,11 @@
           credentials: "include",
           signal: this.abortController && this.abortController.signal
         });
+        this.lastContinuationFrameStatus = {
+          status: response.ok ? "http-ok" : "http-failed",
+          httpStatus: response.status,
+          includeFallback: Boolean(options.includeFallback)
+        };
         if (!response.ok) {
           return null;
         }
@@ -797,6 +1142,11 @@
           return null;
         }
 
+        this.lastContinuationFrameStatus = {
+          status: "fetch-failed",
+          includeFallback: Boolean(options.includeFallback),
+          message: error && error.message ? error.message : String(error)
+        };
         this.reportStatus("continuation-frame-failed", {
           message: error && error.message ? error.message : String(error)
         });
@@ -829,15 +1179,23 @@
         }
       }
 
-      if (options.includeFallback && this.mode === "live" && this.videoId) {
-        const fallbackUrl = new URL("/live_chat", location.origin);
-        fallbackUrl.searchParams.set("is_popout", "1");
-        fallbackUrl.searchParams.set("v", this.videoId);
-        fallbackUrl.searchParams.set("embed_domain", location.hostname);
-        return fallbackUrl.href;
+      if (options.includeFallback && this.videoId) {
+        return this.getFallbackChatFrameUrl();
       }
 
       return "";
+    }
+
+    getFallbackChatFrameUrl() {
+      if (this.mode === "liveReplay") {
+        return "";
+      }
+
+      const fallbackUrl = new URL("/live_chat", location.origin);
+      fallbackUrl.searchParams.set("is_popout", "1");
+      fallbackUrl.searchParams.set("v", this.videoId);
+      fallbackUrl.searchParams.set("embed_domain", location.hostname);
+      return fallbackUrl.href;
     }
 
     isChatFrameForCurrentVideo(frame, src) {
@@ -856,9 +1214,12 @@
         return frameWatchFlexy.getAttribute("video-id") === this.videoId;
       }
 
-      const watchFlexy = Array.from(document.querySelectorAll("ytd-watch-flexy[video-id]"))
-        .find((node) => node.getAttribute("video-id") === this.videoId);
-      return Boolean(watchFlexy && watchFlexy.contains(frame));
+      const watchFlexy = this.getCurrentWatchFlexy();
+      if (watchFlexy) {
+        return watchFlexy.contains(frame);
+      }
+
+      return this.isCurrentPage() && frame.isConnected;
     }
 
     findContinuationInChatFrameUrl(frameUrl) {
@@ -889,6 +1250,22 @@
         innertube.parseJsonAfter(html, "var ytInitialData =") ||
         innertube.parseJsonAfter(html, "window[\"ytInitialData\"] =") ||
         innertube.parseJsonAfter(html, "window.ytInitialData =") ||
+        innertube.parseJsonAfter(html, "\"ytInitialData\":") ||
+        null
+      );
+    }
+
+    extractPlayerResponseFromHtml(html) {
+      if (!html || typeof html !== "string" || !innertube.parseJsonAfter) {
+        return null;
+      }
+
+      return (
+        innertube.parseJsonAfter(html, "ytInitialPlayerResponse =") ||
+        innertube.parseJsonAfter(html, "var ytInitialPlayerResponse =") ||
+        innertube.parseJsonAfter(html, "window[\"ytInitialPlayerResponse\"] =") ||
+        innertube.parseJsonAfter(html, "window.ytInitialPlayerResponse =") ||
+        innertube.parseJsonAfter(html, "\"playerResponse\":") ||
         null
       );
     }
@@ -954,7 +1331,7 @@
       this.config = null;
       this.video = null;
       this.seen.clear();
-      this.replaySeenContinuations.clear();
+      this.replaySeenRequestKeys.clear();
     }
   }
 

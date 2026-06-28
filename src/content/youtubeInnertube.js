@@ -294,15 +294,29 @@
 
   const getContinuationToken = (value) =>
     getNested(value, ["continuationEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["continuationEndpoint", "continuationCommand", "continuation"]) ||
     getNested(value, ["command", "continuationCommand", "token"]) ||
+    getNested(value, ["command", "continuationCommand", "continuation"]) ||
     getNested(value, ["button", "buttonRenderer", "command", "continuationCommand", "token"]) ||
+    getNested(value, ["button", "buttonRenderer", "command", "continuationCommand", "continuation"]) ||
     getNested(value, ["button", "buttonRenderer", "serviceEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["button", "buttonRenderer", "serviceEndpoint", "continuationCommand", "continuation"]) ||
     getNested(value, ["button", "buttonRenderer", "navigationEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["button", "buttonRenderer", "navigationEndpoint", "continuationCommand", "continuation"]) ||
     getNested(value, ["buttonRenderer", "command", "continuationCommand", "token"]) ||
+    getNested(value, ["buttonRenderer", "command", "continuationCommand", "continuation"]) ||
     getNested(value, ["buttonRenderer", "serviceEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["buttonRenderer", "serviceEndpoint", "continuationCommand", "continuation"]) ||
     getNested(value, ["buttonRenderer", "navigationEndpoint", "continuationCommand", "token"]) ||
+    getNested(value, ["buttonRenderer", "navigationEndpoint", "continuationCommand", "continuation"]) ||
     getNested(value, ["onTap", "innertubeCommand", "continuationCommand", "token"]) ||
+    getNested(value, ["onTap", "innertubeCommand", "continuationCommand", "continuation"]) ||
     getNested(value, ["continuationCommand", "token"]) ||
+    getNested(value, ["continuationCommand", "continuation"]) ||
+    getNested(value, ["getLiveChatEndpoint", "continuation"]) ||
+    getNested(value, ["getLiveChatReplayEndpoint", "continuation"]) ||
+    getNested(value, ["liveChatEndpoint", "continuation"]) ||
+    getNested(value, ["liveChatReplayEndpoint", "continuation"]) ||
     getNested(value, ["reloadContinuationData", "continuation"]) ||
     getNested(value, ["nextContinuationData", "continuation"]) ||
     getNested(value, ["timedContinuationData", "continuation"]) ||
@@ -330,7 +344,7 @@
     return token;
   };
 
-  const findNextContinuation = (data) => {
+  const findNextContinuation = (data, options = {}) => {
     const actions = [];
 
     walk(data, (node) => {
@@ -358,31 +372,45 @@
       }
     }
 
-    return getLiveChatContinuation(data).token;
+    return getLiveChatContinuation(data, options).token;
   };
 
-  const getLiveChatContinuation = (data) => {
+  const getLiveChatContinuation = (data, options = {}) => {
     const continuation = {
       token: "",
       timeoutMs: 0,
       clickTrackingParams: ""
     };
+    const hasReplayFilter = Object.prototype.hasOwnProperty.call(options, "replay");
+    const replay = Boolean(options.replay);
 
     walk(data, (node) => {
       if (continuation.token) {
         return false;
       }
 
-      const candidates = [
-        node.timedContinuationData,
-        node.invalidationContinuationData,
-        node.reloadContinuationData,
-        node.nextContinuationData,
-        node.playerSeekContinuationData,
-        node.liveChatReplayContinuationData
-      ].filter(Boolean);
+      const candidates = hasReplayFilter
+        ? replay
+          ? [
+              node.playerSeekContinuationData,
+              node.liveChatReplayContinuationData
+            ]
+          : [
+              node.timedContinuationData,
+              node.invalidationContinuationData,
+              node.reloadContinuationData,
+              node.nextContinuationData
+            ]
+        : [
+            node.timedContinuationData,
+            node.invalidationContinuationData,
+            node.reloadContinuationData,
+            node.nextContinuationData,
+            node.playerSeekContinuationData,
+            node.liveChatReplayContinuationData
+          ];
 
-      for (const candidate of candidates) {
+      for (const candidate of candidates.filter(Boolean)) {
         const token = candidate.continuation;
         if (token) {
           continuation.token = token;
@@ -402,6 +430,71 @@
     return continuation;
   };
 
+  const getContinuationFromCandidate = (candidate) => {
+    if (!candidate || !candidate.continuation) {
+      return null;
+    }
+
+    return {
+      token: candidate.continuation,
+      timeoutMs:
+        Number(candidate.timeoutMs) ||
+        Number(candidate.timeoutMsForDummy) ||
+        Number(candidate.timeUntilLastMessageMsec) ||
+        0,
+      clickTrackingParams: candidate.clickTrackingParams || ""
+    };
+  };
+
+  const getTypedContinuationFromNode = (node, replay) => {
+    const candidates = replay
+      ? [
+          node && node.playerSeekContinuationData,
+          node && node.liveChatReplayContinuationData
+        ]
+      : [
+          node && node.timedContinuationData,
+          node && node.invalidationContinuationData,
+          node && node.reloadContinuationData,
+          node && node.nextContinuationData
+        ];
+
+    for (const candidate of candidates) {
+      const info = getContinuationFromCandidate(candidate);
+      if (info && info.token) {
+        return info;
+      }
+    }
+
+    return null;
+  };
+
+  const getLiveChatContinuationByType = (data, replay) => {
+    const continuation = {
+      token: "",
+      timeoutMs: 0,
+      clickTrackingParams: ""
+    };
+
+    walk(data, (node) => {
+      if (continuation.token) {
+        return false;
+      }
+
+      const info = getTypedContinuationFromNode(node, replay);
+      if (info && info.token) {
+        continuation.token = info.token;
+        continuation.timeoutMs = info.timeoutMs;
+        continuation.clickTrackingParams = info.clickTrackingParams;
+        return false;
+      }
+
+      return undefined;
+    });
+
+    return continuation;
+  };
+
   const getEndpointApiUrl = (value) =>
     getNested(value, ["commandMetadata", "webCommandMetadata", "apiUrl"]) ||
     getNested(value, ["continuationEndpoint", "commandMetadata", "webCommandMetadata", "apiUrl"]) ||
@@ -411,6 +504,14 @@
     "";
 
   const isLiveChatEndpoint = (value, replay) => {
+    if (replay && (value.getLiveChatReplayEndpoint || value.liveChatReplayEndpoint)) {
+      return true;
+    }
+
+    if (!replay && (value.getLiveChatEndpoint || value.liveChatEndpoint)) {
+      return true;
+    }
+
     const apiUrl = getEndpointApiUrl(value);
     if (!apiUrl || !apiUrl.includes("/live_chat/")) {
       return false;
@@ -420,22 +521,69 @@
     return replay ? isReplayEndpoint : apiUrl.includes("/get_live_chat") && !isReplayEndpoint;
   };
 
+  const getCommandContinuationToken = (value) =>
+    getNested(value, ["continuationCommand", "token"]) ||
+    getNested(value, ["continuationCommand", "continuation"]) ||
+    null;
+
+  const getLiveChatEndpointContinuationToken = (value, replay) => {
+    const endpointNames = replay
+      ? ["getLiveChatReplayEndpoint", "liveChatReplayEndpoint"]
+      : ["getLiveChatEndpoint", "liveChatEndpoint"];
+
+    for (const endpointName of endpointNames) {
+      const token =
+        getNested(value, [endpointName, "continuation"]) ||
+        getNested(value, ["continuationEndpoint", endpointName, "continuation"]) ||
+        getNested(value, ["command", endpointName, "continuation"]) ||
+        getNested(value, ["serviceEndpoint", endpointName, "continuation"]) ||
+        getNested(value, ["navigationEndpoint", endpointName, "continuation"]);
+      if (token) {
+        return token;
+      }
+    }
+
+    if (!isLiveChatEndpoint(value, replay)) {
+      return "";
+    }
+
+    const commandContainers = [
+      value,
+      value.continuationEndpoint,
+      value.command,
+      value.serviceEndpoint,
+      value.navigationEndpoint,
+      getNested(value, ["button", "buttonRenderer", "command"]),
+      getNested(value, ["button", "buttonRenderer", "serviceEndpoint"]),
+      getNested(value, ["button", "buttonRenderer", "navigationEndpoint"]),
+      value.buttonRenderer && value.buttonRenderer.command,
+      value.buttonRenderer && value.buttonRenderer.serviceEndpoint,
+      value.buttonRenderer && value.buttonRenderer.navigationEndpoint,
+      getNested(value, ["onTap", "innertubeCommand"])
+    ];
+
+    for (const commandContainer of commandContainers) {
+      const token = getCommandContinuationToken(commandContainer);
+      if (token) {
+        return token;
+      }
+    }
+
+    return "";
+  };
+
   const pickLiveChatContinuation = (container, replay) => {
     if (!container || typeof container !== "object") {
       return null;
     }
 
-    const containerInfo = getLiveChatContinuation(container);
-    if (containerInfo.token) {
-      const marker = stringifySmall(container);
-      const looksReplay = /replay|get_live_chat_replay|liveChatReplay|playerSeekContinuationData|videoOffsetTimeMsec/i.test(marker);
-      if (replay ? looksReplay : !looksReplay) {
-        return {
-          ...containerInfo,
-          isReplay: looksReplay,
-          source: "live-chat-container"
-        };
-      }
+    const containerInfo = getLiveChatContinuationByType(container, replay);
+    if (containerInfo && containerInfo.token) {
+      return {
+        ...containerInfo,
+        isReplay: replay,
+        source: "live-chat-container"
+      };
     }
 
     let endpointInfo = null;
@@ -448,7 +596,7 @@
         return undefined;
       }
 
-      const token = getContinuationToken(node);
+      const token = getLiveChatEndpointContinuationToken(node, replay);
       if (token) {
         endpointInfo = {
           token,
@@ -466,16 +614,9 @@
     return endpointInfo;
   };
 
-  const stringifySmall = (value) => {
-    try {
-      return JSON.stringify(value).slice(0, 2500);
-    } catch (error) {
-      return "";
-    }
-  };
-
   const findLiveChatContinuation = (data, options = {}) => {
     const replay = Boolean(options.replay);
+    const allowContinuationData = Boolean(options.allowContinuationData);
     let result = null;
 
     walk(data, (node) => {
@@ -491,8 +632,20 @@
         result = pickLiveChatContinuation(node.liveChatContinuation, replay);
       }
 
+      const directInfo = !result && (replay || allowContinuationData)
+        ? getTypedContinuationFromNode(node, replay)
+        : null;
+      if (directInfo && directInfo.token) {
+        result = {
+          ...directInfo,
+          isReplay: replay,
+          source: "live-chat-continuation-data"
+        };
+        return false;
+      }
+
       if (!result && isLiveChatEndpoint(node, replay)) {
-        const token = getContinuationToken(node);
+        const token = getLiveChatEndpointContinuationToken(node, replay);
         if (token) {
           result = {
             token,

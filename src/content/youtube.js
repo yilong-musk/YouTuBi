@@ -37,14 +37,7 @@
   const t = (key, substitutions, fallback) =>
     window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
 
-  const isFiniteNumber = (value) => typeof value === "number" && Number.isFinite(value);
-  const isTrueFlag = (value) => value === true || value === "true" || value === 1 || value === "1";
-  const MODE_DETECTION_RETRY_MS = 250;
-  const NORMAL_MODE_DETECTION_RETRY_COUNT = 20;
-  const LIVE_CHAT_RETRY_LIMIT = 4;
-  const LIVE_CHAT_RETRY_BASE_MS = 2000;
-  const LIVE_CHAT_RETRY_MAX_MS = 30000;
-  const LIVE_REPLAY_PENDING_CHAT_RETRY_COUNT = 4;
+  const CHAT_INTERFACE_RETRY_COUNT = 16;
 
   class YoutubiApp {
     constructor() {
@@ -53,9 +46,10 @@
       this.commentSource = null;
       this.apiCommentSource = null;
       this.liveChatSource = null;
+      this.liveChatReplaySource = null;
+      this.playbackController = null;
       this.timelineScheduler = null;
       this.realtimeScheduler = null;
-      this.liveReplayLoadState = null;
       this.toggleButton = null;
       this.toggleButtonLabel = null;
       this.toggleMountTimer = 0;
@@ -67,13 +61,9 @@
       this.routeTimer = 0;
       this.retryTimer = 0;
       this.retryCount = 0;
-      this.modeRetryCount = 0;
-      this.modeRetryVideoId = "";
       this.lastUrl = "";
       this.activeVideoId = "";
-      this.activeMode = "normal";
       this.debugState = null;
-      this.liveChatRetryState = new Map();
       this.boundRouteChanged = () => this.handleRouteChanged();
     }
 
@@ -130,7 +120,7 @@
         return false;
       }
 
-      if (!this.activeVideoId || videoId !== this.activeVideoId || !this.layer || !this.getActiveScheduler()) {
+      if (!this.activeVideoId || videoId !== this.activeVideoId || !this.layer || !this.playbackController) {
         return true;
       }
 
@@ -142,22 +132,13 @@
         return true;
       }
 
-      if (this.shouldRetryMountedLiveChat()) {
-        return true;
-      }
-
       const player = this.findPlayer();
       if (player && player !== this.layer.playerElement) {
         return true;
       }
 
-      if (this.shouldRetryMountedPlaybackMode(player, null, videoId)) {
-        return true;
-      }
-
       const video = player && this.findVideo(player);
-      const scheduler = this.getActiveScheduler();
-      return Boolean(video && scheduler.video && video !== scheduler.video);
+      return Boolean(video && this.playbackController.video && video !== this.playbackController.video);
     }
 
     scheduleRebuild(delay) {
@@ -209,50 +190,29 @@
         return;
       }
 
-      const activeScheduler = this.getActiveScheduler();
       if (
         this.layer &&
-        activeScheduler &&
+        this.playbackController &&
         this.layer.host &&
         this.layer.host.isConnected &&
         this.layer.playerElement === player &&
-        activeScheduler.video === video &&
-        this.lastUrl === currentUrl &&
-        !this.shouldRetryMountedLiveChat() &&
-        !this.shouldRetryMountedPlaybackMode(player, video, videoId)
+        this.playbackController.video === video &&
+        this.lastUrl === currentUrl
       ) {
         return;
       }
 
       this.disposePage();
-      const playbackMode = this.detectPlaybackMode(player, video, videoId);
-      if (this.shouldDelayNormalMode(playbackMode)) {
-        if (this.modeRetryVideoId !== videoId) {
-          this.modeRetryVideoId = videoId;
-          this.modeRetryCount = 0;
-        }
-
-        this.modeRetryCount += 1;
-        if (this.modeRetryCount <= NORMAL_MODE_DETECTION_RETRY_COUNT) {
-          this.scheduleRebuild(MODE_DETECTION_RETRY_MS);
-          return;
-        }
-
-        playbackMode.modeReason = "normal-detection-timeout";
-      }
+      const interfaces = this.detectPlaybackInterfaces(player, videoId);
 
       this.retryCount = 0;
-      this.modeRetryCount = 0;
-      this.modeRetryVideoId = "";
       this.lastUrl = currentUrl;
       this.activeVideoId = videoId;
-      this.activeMode = playbackMode.mode;
-      this.resetDebugState(videoId, playbackMode);
+      this.resetDebugState(videoId, interfaces);
       this.layer = new window.YoutubiDanmakuLayer(player, this.settings, {
         onTimingChange: (event) => {
-          const scheduler = this.getActiveScheduler();
-          if (scheduler && typeof scheduler.handleLayoutTimingChange === "function") {
-            scheduler.handleLayoutTimingChange(event.reason);
+          if (this.playbackController && typeof this.playbackController.handleLayoutTimingChange === "function") {
+            this.playbackController.handleLayoutTimingChange(event.reason);
           }
         },
         onReplyRequest: (comment) => {
@@ -263,24 +223,26 @@
           return this.loadRepliesForComment(videoId, comment);
         }
       });
-      if (playbackMode.mode === "live") {
-        this.startLiveChat(videoId, video, playbackMode);
-      } else if (playbackMode.mode === "liveReplay") {
-        this.startLiveReplay(videoId, video, playbackMode);
-      } else {
-        this.startCommentTimeline(videoId, video);
-      }
+      this.playbackController = new window.YoutubiDanmakuPlaybackController({
+        layer: this.layer,
+        video,
+        onStateChange: (updates) => this.updateDebugState(updates)
+      });
+      this.timelineScheduler = this.playbackController.timelineScheduler;
+      this.realtimeScheduler = this.playbackController.realtimeScheduler;
+      this.startCommentSource(videoId);
+      this.startLiveChatSource(videoId, interfaces.liveContinuation);
+      this.startLiveChatReplaySource(videoId, video, interfaces.replayContinuation);
       this.scheduleToggleMount(0);
     }
 
-    startCommentTimeline(videoId, video) {
-      this.timelineScheduler = new window.YoutubiTimelineScheduler({
-        layer: this.layer,
-        video,
-        autoRelease: false,
-        onStateChange: (updates) => this.updateDebugState(updates)
-      });
-      this.updateDebugState({ status: "mounted", mode: "normal" });
+    startCommentSource(videoId) {
+      if (!this.playbackController) {
+        return;
+      }
+
+      this.playbackController.addTimelineSource("comments");
+      this.updateDebugState({ status: "comment-source-mounted" });
       this.apiCommentSource = new window.YoutubiYouTubeCommentApiSource({
         videoId,
         maxComments: this.settings.preloadLimit,
@@ -290,8 +252,11 @@
           }
 
           this.recordComment("api");
-          if (this.timelineScheduler) {
-            this.timelineScheduler.addComment(comment);
+          if (this.playbackController) {
+            this.playbackController.addTimelineItem({
+              ...comment,
+              playback: "timeline"
+            });
             this.updateDebugState({ status: "api-comment" });
           }
         },
@@ -308,25 +273,23 @@
 
           if (this.shouldUseDomFallback(status)) {
             this.startDomFallback(videoId, status.status);
+            if (this.playbackController) {
+              this.playbackController.completeTimelineSource("comments", `api:${status.status}`);
+            }
             return;
           }
 
-          if (this.timelineScheduler && this.isApiSuccessTerminalStatus(status.status)) {
-            this.timelineScheduler.completeInitialLoad(status.status);
+          if (this.playbackController && this.isCommentApiTerminalStatus(status.status)) {
+            this.playbackController.completeTimelineSource("comments", status.status);
           }
         }
       });
       this.apiCommentSource.start();
     }
 
-    startLiveChat(videoId, video, playbackMode) {
-      this.realtimeScheduler = new window.YoutubiRealtimeScheduler({
-        layer: this.layer,
-        video,
-        onStateChange: (updates) => this.updateDebugState(updates)
-      });
-      this.updateDebugState({ status: "live-mounted", mode: "live" });
-      if (!playbackMode.continuation) {
+    startLiveChatSource(videoId, continuationInfo) {
+      this.updateDebugState({ status: "live-chat-source-mounted" });
+      if (!continuationInfo || !continuationInfo.token) {
         this.updateDebugState({
           liveChatStatus: "continuation-pending",
           liveChatError: ""
@@ -336,117 +299,84 @@
       this.liveChatSource = new window.YoutubiYouTubeLiveChatSource({
         videoId,
         mode: "live",
-        continuation: playbackMode.continuation,
+        continuation: continuationInfo && continuationInfo.token || "",
+        initialContinuationRetryCount: continuationInfo && continuationInfo.token ? undefined : CHAT_INTERFACE_RETRY_COUNT,
         maxItems: this.settings.preloadLimit,
         onChat: (chat) => {
-          if (!this.isCurrentVideo(videoId) || this.activeMode !== "live") {
+          if (!this.isCurrentVideo(videoId)) {
             return;
           }
 
           this.recordComment("liveChat");
-          if (this.realtimeScheduler) {
-            this.realtimeScheduler.addComment(chat);
+          if (this.playbackController) {
+            this.playbackController.addRealtimeItem({
+              ...chat,
+              playback: "realtime"
+            });
             this.updateDebugState({ status: "live-chat" });
           }
         },
         onStatus: (status) => {
-          if (!this.isCurrentVideo(videoId) || this.activeMode !== "live") {
+          if (!this.isCurrentVideo(videoId)) {
             return;
           }
 
-          this.updateLiveChatStatus(status);
+          this.updateLiveChatStatus(status, "live");
         }
       });
       this.liveChatSource.start();
     }
 
-    startLiveReplay(videoId, video, playbackMode) {
-      this.timelineScheduler = new window.YoutubiTimelineScheduler({
-        layer: this.layer,
-        video,
-        autoRelease: false,
-        suppressInitialBacklog: true,
-        onStateChange: (updates) => this.updateDebugState(updates)
-      });
-      this.updateDebugState({ status: "live-replay-mounted", mode: "liveReplay" });
-      this.liveReplayLoadState = {
-        commentsDone: false,
-        chatDone: false,
-        completed: false
-      };
+    startLiveChatReplaySource(videoId, video, continuationInfo) {
+      if (!this.playbackController) {
+        return;
+      }
 
-      this.apiCommentSource = new window.YoutubiYouTubeCommentApiSource({
-        videoId,
-        maxComments: this.settings.preloadLimit,
-        onComment: (comment) => {
-          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
-            return;
-          }
-
-          this.recordComment("api");
-          if (this.timelineScheduler) {
-            this.timelineScheduler.addComment(comment);
-            this.updateDebugState({ status: "live-replay-comment" });
-          }
-        },
-        onStatus: (status) => {
-          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
-            return;
-          }
-
-          this.updateDebugState({
-            apiStatus: status.status,
-            apiLoaded: status.loadedCount,
-            apiError: status.message || ""
-          });
-
-          if (this.isApiSuccessTerminalStatus(status.status) || status.status === "failed" || status.status === "config-missing") {
-            this.markLiveReplaySourceDone("comments", status.status);
-          }
-        }
-      });
-      this.apiCommentSource.start();
-
-      if (!playbackMode.continuation) {
+      this.playbackController.addTimelineSource("live-chat-replay");
+      this.updateDebugState({ status: "live-chat-replay-source-mounted" });
+      if (!continuationInfo || !continuationInfo.token) {
         this.updateDebugState({
-          liveChatStatus: "continuation-pending",
-          liveChatError: ""
+          liveReplayChatStatus: "continuation-pending",
+          liveReplayChatError: ""
         });
       }
 
-      this.liveChatSource = new window.YoutubiYouTubeLiveChatSource({
+      this.liveChatReplaySource = new window.YoutubiYouTubeLiveChatSource({
         videoId,
         mode: "liveReplay",
-        continuation: playbackMode.continuation,
-        initialContinuationRetryCount: playbackMode.continuation ? undefined : LIVE_REPLAY_PENDING_CHAT_RETRY_COUNT,
+        continuation: continuationInfo && continuationInfo.token || "",
+        initialContinuationRetryCount: continuationInfo && continuationInfo.token ? undefined : CHAT_INTERFACE_RETRY_COUNT,
         maxItems: this.settings.preloadLimit,
         video,
         onChat: (chat) => {
-          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+          if (!this.isCurrentVideo(videoId)) {
             return;
           }
 
-          this.recordComment("liveChat");
-          if (this.timelineScheduler) {
-            this.timelineScheduler.addComment(chat);
+          this.recordComment("liveReplayChat");
+          if (this.playbackController) {
+            this.playbackController.addTimelineItem({
+              ...chat,
+              playback: "timeline"
+            });
             this.updateDebugState({ status: "live-replay-chat" });
           }
         },
         onStatus: (status) => {
-          if (!this.isCurrentVideo(videoId) || this.activeMode !== "liveReplay") {
+          if (!this.isCurrentVideo(videoId)) {
             return;
           }
 
-          this.updateLiveChatStatus(status);
+          this.updateLiveChatStatus(status, "replay");
           if (status.status === "replay-ready") {
-            this.markLiveReplaySourceDone("chat", status.status);
+            this.completeTimelineSource("live-chat-replay", status.status);
           }
           if (this.isLiveChatTerminalStatus(status.status)) {
-            this.markLiveReplaySourceDone("chat", status.status);
+            this.completeTimelineSource("live-chat-replay", status.status);
           }
         }
       });
-      this.liveChatSource.start();
+      this.liveChatReplaySource.start();
     }
 
     findPlayer() {
@@ -489,7 +419,7 @@
     }
 
     getActiveScheduler() {
-      return this.timelineScheduler || this.realtimeScheduler;
+      return this.playbackController || this.timelineScheduler || this.realtimeScheduler;
     }
 
     getVideoId() {
@@ -504,7 +434,7 @@
       return Boolean(videoId) && videoId === this.activeVideoId && videoId === this.getVideoId();
     }
 
-    detectPlaybackMode(player, video, videoId) {
+    detectPlaybackInterfaces(player, videoId) {
       const innertube = window.YoutubiInnertube;
       const playerData = this.getPlayerVideoData(player);
       const playerVideoId = this.getVideoDataVideoId(playerData);
@@ -517,11 +447,11 @@
       const initialDataEvidence = this.getInitialDataVideoEvidence(rawInitialData, videoId);
       const initialData = initialDataEvidence.hasCurrentVideo ? rawInitialData : null;
       const currentPageData = this.getCurrentPageData(videoId);
-      const domLiveDetails = this.getDomLiveDetails(player, videoId);
-      const liveDetails = this.getLiveDetails(playerResponse, playerData, video, domLiveDetails);
       const liveContinuation = this.findChatContinuation(currentPageData, { replay: false }) ||
+        this.findChatContinuation(initialData, { replay: false }) ||
         this.findChatContinuation(playerResponse, { replay: false });
       const replayContinuation = this.findChatContinuation(currentPageData, { replay: true }) ||
+        this.findChatContinuation(initialData, { replay: true }) ||
         this.findChatContinuation(playerResponse, { replay: true });
       const diagnostics = {
         playerVideoId,
@@ -532,156 +462,17 @@
         initialDataHasCurrentVideo: initialDataEvidence.hasCurrentVideo,
         initialDataHasOtherVideo: initialDataEvidence.hasOtherVideo,
         currentPageDataTrusted: currentPageData.length > 0,
-        domLiveSource: domLiveDetails.source,
-        domLiveChatType: domLiveDetails.chatType,
-        domLiveChatSrc: domLiveDetails.chatSrc,
-        domWatchFlexyLive: domLiveDetails.watchFlexyLive,
-        domPlayerLive: domLiveDetails.playerLive,
-        hasExplicitLiveStatus: liveDetails.hasExplicitLiveStatus,
         hasLiveContinuation: Boolean(liveContinuation && liveContinuation.token),
         hasReplayContinuation: Boolean(replayContinuation && replayContinuation.token)
       };
 
-      if (liveDetails.isLiveNow) {
-        return {
-          mode: "live",
-          modeReason: "player-live-now",
-          diagnostics,
-          liveDetails,
-          continuation: liveContinuation && liveContinuation.token,
-          continuationInfo: liveContinuation
-        };
-      }
-
-      const replayInfo = replayContinuation || (liveDetails.isLiveReplay ? liveContinuation : null);
-      if (replayInfo && replayInfo.token) {
-        return {
-          mode: "liveReplay",
-          modeReason: replayContinuation ? "live-replay-continuation" : "ended-live-continuation",
-          diagnostics,
-          liveDetails,
-          continuation: replayInfo.token,
-          continuationInfo: replayInfo
-        };
-      }
-
-      if (liveDetails.isLiveReplay) {
-        return {
-          mode: "liveReplay",
-          modeReason: "ended-live-metadata",
-          diagnostics,
-          liveDetails,
-          continuation: "",
-          continuationInfo: null
-        };
-      }
-
-      if (liveContinuation && liveContinuation.token) {
-        return {
-          mode: "live",
-          modeReason: "live-continuation",
-          diagnostics,
-          liveDetails: {
-            ...liveDetails,
-            isLiveNow: true,
-            isLiveContent: true
-          },
-          continuation: liveContinuation.token,
-          continuationInfo: liveContinuation
-        };
-      }
-
       return {
-        mode: "normal",
-        modeReason: "normal-video",
+        mode: "interfaces",
+        modeReason: "interface-probe",
         diagnostics,
-        liveDetails,
-        continuation: "",
-        continuationInfo: null
+        liveContinuation,
+        replayContinuation
       };
-    }
-
-    shouldDelayNormalMode(playbackMode) {
-      if (!playbackMode || playbackMode.mode !== "normal") {
-        return false;
-      }
-
-      const diagnostics = playbackMode.diagnostics || {};
-      return !diagnostics.hasExplicitLiveStatus &&
-        !diagnostics.hasLiveContinuation &&
-        !diagnostics.hasReplayContinuation;
-    }
-
-    shouldRetryMountedLiveChat() {
-      if (
-        this.activeMode !== "live" ||
-        !this.debugState ||
-        this.debugState.liveChatStatus !== "continuation-missing"
-      ) {
-        return false;
-      }
-
-      const state = this.liveChatRetryState.get(this.activeVideoId);
-      if (!state || state.attempts >= LIVE_CHAT_RETRY_LIMIT) {
-        return false;
-      }
-
-      return Date.now() >= state.nextRetryAt;
-    }
-
-    recordLiveChatContinuationMissing() {
-      if (!this.activeVideoId || this.activeMode !== "live") {
-        return;
-      }
-
-      const previous = this.liveChatRetryState.get(this.activeVideoId) || {
-        attempts: 0,
-        nextRetryAt: 0
-      };
-      const attempts = previous.attempts + 1;
-      const delay = Math.min(
-        LIVE_CHAT_RETRY_MAX_MS,
-        LIVE_CHAT_RETRY_BASE_MS * (2 ** Math.max(0, attempts - 1))
-      );
-
-      this.liveChatRetryState.set(this.activeVideoId, {
-        attempts,
-        nextRetryAt: Date.now() + delay
-      });
-      this.trimLiveChatRetryState();
-    }
-
-    clearLiveChatContinuationRetry() {
-      if (this.activeVideoId) {
-        this.liveChatRetryState.delete(this.activeVideoId);
-      }
-    }
-
-    trimLiveChatRetryState() {
-      if (this.liveChatRetryState.size <= 12) {
-        return;
-      }
-
-      const firstKey = this.liveChatRetryState.keys().next().value;
-      if (firstKey) {
-        this.liveChatRetryState.delete(firstKey);
-      }
-    }
-
-    shouldRetryMountedPlaybackMode(player, video, videoId) {
-      if (!this.activeVideoId || this.activeVideoId !== videoId || this.activeMode !== "normal") {
-        return false;
-      }
-
-      const domLiveDetails = this.getDomLiveDetails(player, videoId);
-      if (domLiveDetails.isLiveContent) {
-        return true;
-      }
-
-      const playerData = this.getPlayerVideoData(player);
-      const playerResponse = this.getPlayerResponseFromPlayer(player);
-      const liveDetails = this.getLiveDetails(playerResponse, playerData, video, domLiveDetails);
-      return Boolean(liveDetails.isLiveContent || liveDetails.isLiveNow || liveDetails.isLiveReplay);
     }
 
     getPlayerVideoData(player) {
@@ -729,59 +520,6 @@
         : "";
     }
 
-    getLiveDetails(playerResponse, playerData, video, domLiveDetails = {}) {
-      const innertube = window.YoutubiInnertube;
-      const getNested = innertube && innertube.getNested;
-      const videoDetails = getNested ? getNested(playerResponse, ["videoDetails"]) || {} : {};
-      const liveBroadcastDetails = getNested
-        ? getNested(playerResponse, ["microformat", "playerMicroformatRenderer", "liveBroadcastDetails"]) || {}
-        : {};
-      const liveStreamability = getNested
-        ? getNested(playerResponse, ["playabilityStatus", "liveStreamability"])
-        : null;
-      const duration = video && video.duration;
-      const durationLooksLive = duration != null && !isFiniteNumber(duration);
-      const hasEnded = Boolean(liveBroadcastDetails.endTimestamp);
-      const hasExplicitLiveStatus = Boolean(
-        domLiveDetails.isLiveContent ||
-        liveStreamability ||
-        liveBroadcastDetails.startTimestamp ||
-        liveBroadcastDetails.endTimestamp ||
-        videoDetails.isLive !== undefined ||
-        videoDetails.isLiveContent !== undefined ||
-        playerData.isLive !== undefined ||
-        playerData.isLiveContent !== undefined ||
-        liveBroadcastDetails.isLiveNow !== undefined
-      );
-      const isLiveNow = Boolean(
-        isTrueFlag(videoDetails.isLive) ||
-        isTrueFlag(playerData.isLive) ||
-        isTrueFlag(liveBroadcastDetails.isLiveNow) ||
-        domLiveDetails.isLiveNow ||
-        (liveStreamability && durationLooksLive)
-      );
-      const isLiveContent = Boolean(
-        isLiveNow ||
-        isTrueFlag(videoDetails.isLiveContent) ||
-        isTrueFlag(playerData.isLiveContent) ||
-        domLiveDetails.isLiveContent ||
-        liveBroadcastDetails.startTimestamp ||
-        hasEnded
-      );
-      const isLiveReplay = Boolean(domLiveDetails.isLiveReplay || (isLiveContent && !isLiveNow && hasEnded));
-
-      return {
-        isLiveNow,
-        isLiveContent,
-        isLiveReplay,
-        hasEnded,
-        startTimestamp: liveBroadcastDetails.startTimestamp || "",
-        endTimestamp: liveBroadcastDetails.endTimestamp || "",
-        durationLooksLive,
-        hasExplicitLiveStatus
-      };
-    }
-
     findChatContinuation(data, options = {}) {
       const innertube = window.YoutubiInnertube;
       if (!data || !innertube || !innertube.findLiveChatContinuation) {
@@ -803,22 +541,28 @@
 
     getInitialDataVideoEvidence(initialData, videoId) {
       const innertube = window.YoutubiInnertube;
+      const getNested = innertube && innertube.getNested;
       const evidence = {
         hasCurrentVideo: false,
         hasOtherVideo: false
       };
 
-      if (!initialData || !videoId || !innertube || !innertube.walk) {
+      if (!initialData || !videoId || !innertube || !innertube.walk || !getNested) {
         return evidence;
       }
 
       innertube.walk(initialData, (node) => {
-        const candidate = node.watchEndpoint && node.watchEndpoint.videoId;
-        if (!candidate) {
+        const candidates = [
+          getNested(node, ["videoDetails", "videoId"]),
+          getNested(node, ["currentVideoEndpoint", "watchEndpoint", "videoId"]),
+          getNested(node, ["watchEndpoint", "videoId"])
+        ].filter(Boolean);
+
+        if (!candidates.length) {
           return undefined;
         }
 
-        if (candidate === videoId) {
+        if (candidates.includes(videoId)) {
           evidence.hasCurrentVideo = true;
           return false;
         }
@@ -869,120 +613,28 @@
       return data;
     }
 
-    getDomLiveDetails(player, videoId) {
-      const chatFrame = this.getLiveChatFrameInfo(videoId);
-      const watchFlexyLive = this.hasLiveWatchFlexy(videoId);
-      const playerLive = this.hasVisibleLivePlayerUi(player);
-      const isLiveReplay = chatFrame.type === "replay";
-      const isLiveNow = chatFrame.type === "live" || watchFlexyLive || playerLive;
-      const sources = [];
-
-      if (chatFrame.type) {
-        sources.push(chatFrame.source);
-      }
-      if (watchFlexyLive) {
-        sources.push("watch-flexy");
-      }
-      if (playerLive) {
-        sources.push("player-ui");
-      }
-
-      return {
-        isLiveNow,
-        isLiveReplay,
-        isLiveContent: isLiveNow || isLiveReplay,
-        source: sources.join(","),
-        chatType: chatFrame.type,
-        chatSrc: chatFrame.src,
-        watchFlexyLive,
-        playerLive
-      };
-    }
-
     getCurrentWatchFlexy(videoId) {
-      return Array.from(document.querySelectorAll("ytd-watch-flexy"))
-        .find((node) => node.getAttribute("video-id") === videoId) || null;
-    }
-
-    hasLiveWatchFlexy(videoId) {
-      const watchFlexy = this.getCurrentWatchFlexy(videoId);
-      if (!watchFlexy) {
-        return false;
+      const watchFlexies = Array.from(document.querySelectorAll("ytd-watch-flexy"));
+      const exact = watchFlexies.find((node) => node.getAttribute("video-id") === videoId);
+      if (exact) {
+        return exact;
       }
 
-      return [
-        "is-live",
-        "is-live-now",
-        "is-live-stream",
-        "live"
-      ].some((attribute) => watchFlexy.hasAttribute(attribute));
-    }
-
-    hasVisibleLivePlayerUi(player) {
-      if (!player || typeof player.querySelectorAll !== "function") {
-        return false;
+      if (this.getVideoId() !== videoId) {
+        return null;
       }
 
-      return Array.from(player.querySelectorAll(".ytp-live, .ytp-live-badge, .ytp-time-live"))
-        .some((node) => this.isVisibleElement(node));
-    }
-
-    getLiveChatFrameInfo(videoId) {
-      const frames = Array.from(document.querySelectorAll(
-        "iframe#chatframe, ytd-live-chat-frame iframe, iframe[src*='/live_chat']"
-      ));
-
-      for (const frame of frames) {
-        const src = frame.getAttribute("src") || "";
-        if (!src || !this.isLiveChatFrameForVideo(frame, src, videoId)) {
-          continue;
-        }
-
-        try {
-          const parsed = new URL(src, location.href);
-          if (parsed.pathname.includes("live_chat_replay")) {
-            return { type: "replay", source: "chatframe", src };
-          }
-
-          if (parsed.pathname.includes("live_chat")) {
-            return { type: "live", source: "chatframe", src };
-          }
-        } catch (error) {
-          if (src.includes("live_chat_replay")) {
-            return { type: "replay", source: "chatframe", src };
-          }
-
-          if (src.includes("live_chat")) {
-            return { type: "live", source: "chatframe", src };
-          }
-        }
-      }
-
-      return { type: "", source: "", src: "" };
-    }
-
-    isLiveChatFrameForVideo(frame, src, videoId) {
-      try {
-        const parsed = new URL(src, location.href);
-        const frameVideoId = parsed.searchParams.get("v") || "";
-        if (frameVideoId) {
-          return frameVideoId === videoId;
-        }
-      } catch (error) {
-        // Fall back to the enclosing watch page below.
-      }
-
-      const frameWatchFlexy = frame.closest && frame.closest("ytd-watch-flexy");
-      if (frameWatchFlexy && frameWatchFlexy.getAttribute("video-id")) {
-        return frameWatchFlexy.getAttribute("video-id") === videoId;
-      }
-
-      const watchFlexy = this.getCurrentWatchFlexy(videoId);
-      return Boolean(watchFlexy && watchFlexy.contains(frame));
+      return watchFlexies.find((node) => {
+        const nodeVideoId = node.getAttribute("video-id") || "";
+        return node.isConnected && (!nodeVideoId || nodeVideoId === videoId);
+      }) || null;
     }
 
     applySettings(status) {
-      if (this.layer) {
+      if (this.playbackController && typeof this.playbackController.setSettings === "function") {
+        this.playbackController.setSettings(this.settings);
+        this.updateDebugState({ status });
+      } else if (this.layer) {
         this.layer.setSettings(this.settings);
         this.updateDebugState({ status });
       }
@@ -1317,10 +969,13 @@
       this.toggleObserver.observe(container, { childList: true });
     }
 
-    isApiSuccessTerminalStatus(status) {
+    isCommentApiTerminalStatus(status) {
       return (
         status === "done" ||
-        status === "continuation-missing"
+        status === "max-comments" ||
+        status === "continuation-missing" ||
+        status === "failed" ||
+        status === "config-missing"
       );
     }
 
@@ -1329,60 +984,39 @@
         status === "done" ||
         status === "max-items" ||
         status === "continuation-missing" ||
+        status === "continuation-rejected" ||
         status === "failed" ||
         status === "config-missing"
       );
     }
 
-    markLiveReplaySourceDone(source, reason) {
-      if (!this.liveReplayLoadState || this.liveReplayLoadState.completed) {
-        return;
-      }
-
-      if (source === "comments") {
-        this.liveReplayLoadState.commentsDone = true;
-      } else if (source === "chat") {
-        this.liveReplayLoadState.chatDone = true;
-      }
-
-      this.updateDebugState({
-        status: `live-replay-${source}-done`,
-        liveReplayCommentsDone: this.liveReplayLoadState.commentsDone,
-        liveReplayChatDone: this.liveReplayLoadState.chatDone
-      });
-
-      if (!this.liveReplayLoadState.commentsDone || !this.liveReplayLoadState.chatDone) {
-        return;
-      }
-
-      this.liveReplayLoadState.completed = true;
-      if (this.timelineScheduler) {
-        this.timelineScheduler.completeInitialLoad(`live-replay:${reason || "done"}`);
+    completeTimelineSource(source, reason) {
+      if (this.playbackController && typeof this.playbackController.completeTimelineSource === "function") {
+        this.playbackController.completeTimelineSource(source, reason || "done");
       }
     }
 
-    updateLiveChatStatus(status = {}) {
-      if (status.status === "continuation-missing") {
-        this.recordLiveChatContinuationMissing();
-      } else if (
-        status.status === "ready" ||
-        status.status === "baseline" ||
-        status.status === "polling" ||
-        status.status === "replay-ready" ||
-        status.status === "replay-buffer"
-      ) {
-        this.clearLiveChatContinuationRetry();
+    updateLiveChatStatus(status = {}, source = "live") {
+      if (source === "live") {
+        this.updateDebugState({
+          liveChatStatus: status.status || "idle",
+          liveChatLoaded: status.loadedCount || 0,
+          liveChatError: status.message || "",
+          liveChatContinuation: status.continuation || this.debugState && this.debugState.liveChatContinuation || "",
+          liveChatContinuationSource:
+            status.continuationSource || this.debugState && this.debugState.liveChatContinuationSource || ""
+        });
+        return;
       }
 
-      const retryState = this.activeVideoId ? this.liveChatRetryState.get(this.activeVideoId) : null;
       this.updateDebugState({
-        liveChatStatus: status.status || "idle",
-        liveChatLoaded: status.loadedCount || 0,
-        liveChatError: status.message || "",
-        liveChatContinuation: status.continuation || this.debugState && this.debugState.liveChatContinuation || "",
-        liveChatContinuationSource:
-          status.continuationSource || this.debugState && this.debugState.liveChatContinuationSource || "",
-        liveChatRetryCount: retryState ? retryState.attempts : 0
+        liveReplayChatStatus: status.status || "idle",
+        liveReplayChatLoaded: status.loadedCount || 0,
+        liveReplayChatError: status.message || "",
+        liveReplayChatContinuation:
+          status.continuation || this.debugState && this.debugState.liveReplayChatContinuation || "",
+        liveReplayChatContinuationSource:
+          status.continuationSource || this.debugState && this.debugState.liveReplayChatContinuationSource || ""
       });
     }
 
@@ -1392,9 +1026,12 @@
       }
 
       return (
-        status.status === "failed" ||
-        status.status === "config-missing" ||
-        (status.status === "continuation-missing" && !status.loadedCount)
+        !status.loadedCount &&
+        (
+          status.status === "failed" ||
+          status.status === "config-missing" ||
+          status.status === "continuation-missing"
+        )
       );
     }
 
@@ -1437,10 +1074,6 @@
         this.apiCommentSource = null;
       }
 
-      if (this.timelineScheduler && typeof this.timelineScheduler.reset === "function") {
-        this.timelineScheduler.reset("dom-fallback", { autoRelease: true });
-      }
-
       this.updateDebugState({
         status: "dom-fallback",
         apiStatus: reason || "fallback",
@@ -1457,8 +1090,11 @@
           }
 
           this.recordComment("dom");
-          if (this.timelineScheduler) {
-            this.timelineScheduler.addComment(comment);
+          if (this.playbackController) {
+            this.playbackController.addTimelineItem({
+              ...comment,
+              playback: "timeline"
+            });
             this.updateDebugState({ status: "dom-comment" });
           }
         }
@@ -1466,14 +1102,13 @@
       this.commentSource.start();
     }
 
-    resetDebugState(videoId, playbackMode = {}) {
-      const diagnostics = playbackMode.diagnostics || {};
-      const liveDetails = playbackMode.liveDetails || {};
+    resetDebugState(videoId, interfaces = {}) {
+      const diagnostics = interfaces.diagnostics || {};
       this.debugState = {
         status: "starting",
         videoId,
-        mode: playbackMode.mode || "normal",
-        modeReason: playbackMode.modeReason || "",
+        mode: "interfaces",
+        modeReason: interfaces.modeReason || "interface-probe",
         playerVideoId: diagnostics.playerVideoId || "",
         playerResponseSource: diagnostics.playerResponseSource || "",
         playerResponseVideoId: diagnostics.playerResponseVideoId || "",
@@ -1482,29 +1117,21 @@
         initialDataHasCurrentVideo: Boolean(diagnostics.initialDataHasCurrentVideo),
         initialDataHasOtherVideo: Boolean(diagnostics.initialDataHasOtherVideo),
         currentPageDataTrusted: Boolean(diagnostics.currentPageDataTrusted),
-        domLiveSource: diagnostics.domLiveSource || "",
-        domLiveChatType: diagnostics.domLiveChatType || "",
-        domWatchFlexyLive: Boolean(diagnostics.domWatchFlexyLive),
-        domPlayerLive: Boolean(diagnostics.domPlayerLive),
-        isLiveNow: Boolean(liveDetails.isLiveNow),
-        isLiveContent: Boolean(liveDetails.isLiveContent),
-        isLiveReplay: Boolean(liveDetails.isLiveReplay),
-        liveHasEnded: Boolean(liveDetails.hasEnded),
-        hasExplicitLiveStatus: Boolean(liveDetails.hasExplicitLiveStatus),
-        liveStartTimestamp: liveDetails.startTimestamp || "",
-        liveEndTimestamp: liveDetails.endTimestamp || "",
         liveChatStatus: "idle",
         liveChatLoaded: 0,
         liveChatQueued: 0,
         liveChatDropped: 0,
         liveChatError: "",
-        liveChatContinuation: playbackMode.continuation ? "found" : "",
-        liveChatContinuationSource: playbackMode.continuationInfo && playbackMode.continuationInfo.source || "",
-        liveChatRetryCount: 0,
+        liveChatContinuation: interfaces.liveContinuation && interfaces.liveContinuation.token ? "found" : "",
+        liveChatContinuationSource: interfaces.liveContinuation && interfaces.liveContinuation.source || "",
+        liveReplayChatStatus: "idle",
+        liveReplayChatLoaded: 0,
+        liveReplayChatError: "",
+        liveReplayChatContinuation: interfaces.replayContinuation && interfaces.replayContinuation.token ? "found" : "",
+        liveReplayChatContinuationSource: interfaces.replayContinuation && interfaces.replayContinuation.source || "",
         hasLiveContinuation: Boolean(diagnostics.hasLiveContinuation),
         hasReplayContinuation: Boolean(diagnostics.hasReplayContinuation),
-        liveReplayCommentsDone: false,
-        liveReplayChatDone: false,
+        timelineSourcesPending: 0,
         apiStatus: "idle",
         apiLoaded: 0,
         apiComments: 0,
@@ -1529,6 +1156,8 @@
         this.debugState.domComments += 1;
       } else if (source === "liveChat") {
         this.debugState.liveChatLoaded += 1;
+      } else if (source === "liveReplayChat") {
+        this.debugState.liveReplayChatLoaded += 1;
       }
     }
 
@@ -1585,12 +1214,20 @@
         this.liveChatSource.dispose();
       }
 
-      if (this.timelineScheduler) {
-        this.timelineScheduler.dispose();
+      if (this.liveChatReplaySource) {
+        this.liveChatReplaySource.dispose();
       }
 
-      if (this.realtimeScheduler) {
-        this.realtimeScheduler.dispose();
+      if (this.playbackController) {
+        this.playbackController.dispose();
+      } else {
+        if (this.timelineScheduler) {
+          this.timelineScheduler.dispose();
+        }
+
+        if (this.realtimeScheduler) {
+          this.realtimeScheduler.dispose();
+        }
       }
 
       if (this.layer) {
@@ -1602,13 +1239,13 @@
       this.commentSource = null;
       this.apiCommentSource = null;
       this.liveChatSource = null;
+      this.liveChatReplaySource = null;
+      this.playbackController = null;
       this.timelineScheduler = null;
       this.realtimeScheduler = null;
-      this.liveReplayLoadState = null;
       this.layer = null;
       this.debugState = null;
       this.activeVideoId = "";
-      this.activeMode = "normal";
     }
 
     removeOrphanLayers() {
@@ -1652,7 +1289,6 @@
         this.unsubscribeSettings();
       }
 
-      this.liveChatRetryState.clear();
       this.disposePage();
     }
   }

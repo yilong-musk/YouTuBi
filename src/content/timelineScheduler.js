@@ -51,7 +51,9 @@
         return;
       }
 
-      this.timeline.push(this.createTimelineItem(comment));
+      const timelineItem = this.createTimelineItem(comment);
+      this.timeline.push(timelineItem);
+      this.suppressLateBacklogItem(timelineItem);
       this.timeline.sort((left, right) => left.appearAt - right.appearAt || this.compareOrder(left, right));
       this.publishTimeline("timeline-updated");
     }
@@ -166,6 +168,28 @@
           this.initiallySuppressedIds.add(item.id);
         }
       });
+    }
+
+    suppressLateBacklogItem(item) {
+      if (!this.suppressInitialBacklog || !item || !item.comment) {
+        return;
+      }
+
+      const currentTime = this.getCurrentTime();
+      const travelDuration = this.getTravelDuration(item.comment);
+      if (
+        item.comment.source === "live-chat-replay" &&
+        isFiniteNumber(currentTime) &&
+        isFiniteNumber(item.appearAt) &&
+        isFiniteNumber(travelDuration) &&
+        item.appearAt + travelDuration < currentTime
+      ) {
+        this.initiallySuppressedIds.add(item.id);
+        this.initialSuppressionCutoff = Math.max(
+          isFiniteNumber(this.initialSuppressionCutoff) ? this.initialSuppressionCutoff : 0,
+          currentTime
+        );
+      }
     }
 
     buildTimeline(duration) {

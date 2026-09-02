@@ -680,7 +680,13 @@
     return extractConfig();
   };
 
-  const fetchEndpoint = async (endpoint, config, body, signal) => {
+  const buildEndpointError = (endpoint, response) => {
+    const error = new Error(`youtubei ${endpoint} failed: ${response.status}`);
+    error.status = response.status;
+    return error;
+  };
+
+  const fetchEndpoint = async (endpoint, config, body, signal, options = {}) => {
     const headers = {
       "content-type": "application/json",
       "x-youtube-client-name": config.clientName,
@@ -689,6 +695,16 @@
 
     if (config.visitorData) {
       headers["x-goog-visitor-id"] = config.visitorData;
+    }
+
+    if (options.authorize) {
+      const authorization = await buildSapisidHash();
+      if (authorization) {
+        headers.authorization = authorization;
+        headers["x-goog-authuser"] = "0";
+        headers["x-origin"] = "https://www.youtube.com";
+        headers["x-youtube-bootstrap-logged-in"] = "true";
+      }
     }
 
     const response = await fetch(
@@ -706,13 +722,170 @@
     );
 
     if (!response.ok) {
-      throw new Error(`youtubei ${endpoint} failed: ${response.status}`);
+      throw buildEndpointError(endpoint, response);
     }
 
     return response.json();
   };
 
+  const buildSapisidHash = async () => {
+    let sapisid = "";
+
+    try {
+      const match = document.cookie.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
+      sapisid = match ? match[1] : "";
+    } catch (error) {
+      return "";
+    }
+
+    if (!sapisid) {
+      return "";
+    }
+
+    const origin = "https://www.youtube.com";
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    try {
+      const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(`${timestamp} ${sapisid} ${origin}`));
+      const hex = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `SAPISIDHASH ${timestamp}_${hex}`;
+    } catch (error) {
+      return "";
+    }
+  };
+
   const fetchNext = (config, body, signal) => fetchEndpoint("next", config, body, signal);
+
+  const scanCreateCommentParams = (value) => {
+    if (!value || typeof value !== "object") {
+      return "";
+    }
+
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = scanCreateCommentParams(item);
+        if (found) {
+          return found;
+        }
+      }
+      return "";
+    }
+
+    const endpoint = value.createCommentEndpoint;
+    if (endpoint && typeof endpoint === "object") {
+      const candidate = endpoint.createCommentParams;
+      if (typeof candidate === "string" && candidate) {
+        return candidate;
+      }
+    }
+
+    for (const key of Object.keys(value)) {
+      if (key === "createCommentEndpoint") {
+        continue;
+      }
+
+      const found = scanCreateCommentParams(value[key]);
+      if (found) {
+        return found;
+      }
+    }
+
+    return "";
+  };
+
+  const findCreateCommentParams = (...sources) => {
+    for (const source of sources) {
+      if (!source || typeof source !== "object") {
+        continue;
+      }
+
+      const params = scanCreateCommentParams(source);
+      if (params) {
+        return params;
+      }
+    }
+
+    return null;
+  };
+
+  const createComment = (config, params, text, signal) =>
+    fetchEndpoint(
+      "comment/create_comment",
+      config,
+      {
+        createCommentParams: params,
+        commentText: text
+      },
+      signal,
+      { authorize: true }
+    );
+
+  const buildCreateCommentParams = (videoId) => {
+    const id = String(videoId || "");
+    if (!id) {
+      return null;
+    }
+
+    const idBytes = new TextEncoder().encode(id);
+    const bytes = new Uint8Array(idBytes.length + 6);
+    bytes[0] = 18;
+    bytes[1] = idBytes.length;
+    bytes.set(idBytes, 2);
+    bytes[2 + idBytes.length] = 42;
+    bytes[3 + idBytes.length] = 0;
+    bytes[4 + idBytes.length] = 80;
+    bytes[5 + idBytes.length] = 7;
+
+    let binary = "";
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+
+    return encodeURIComponent(btoa(binary));
+  };
+
+  const buildCommentsSectionContinuation = (videoId) => {
+    const id = String(videoId || "");
+    if (!id) {
+      return null;
+    }
+
+    const idBytes = new TextEncoder().encode(id);
+    const targetBytes = new TextEncoder().encode("comments-section");
+
+    const optionsBytes = [
+      34, idBytes.length, ...idBytes,
+      120, 2
+    ];
+    const paramsBytes = [
+      34, optionsBytes.length, ...optionsBytes,
+      66, targetBytes.length, ...targetBytes
+    ];
+    const contextBytes = [
+      18, idBytes.length, ...idBytes
+    ];
+    const bytes = [
+      18, contextBytes.length, ...contextBytes,
+      24, 6,
+      50, paramsBytes.length, ...paramsBytes
+    ];
+
+    let binary = "";
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+
+    return encodeURIComponent(btoa(binary));
+  };
+
+  const fetchCommentsSection = (config, videoId, signal) => {
+    const continuation = buildCommentsSectionContinuation(videoId);
+    if (!continuation) {
+      return Promise.resolve(null);
+    }
+
+    return fetchNext(config, { continuation }, signal);
+  };
 
   window.YoutubiInnertube = {
     sleep,
@@ -736,6 +909,11 @@
     findLiveChatContinuation,
     waitForConfig,
     fetchEndpoint,
-    fetchNext
+    fetchNext,
+    findCreateCommentParams,
+    createComment,
+    buildCreateCommentParams,
+    buildCommentsSectionContinuation,
+    fetchCommentsSection
   };
 })();

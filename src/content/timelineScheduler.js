@@ -12,6 +12,37 @@
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+  const parseLeadingTime = (text) => {
+    const normalized = String(text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const match = normalized.match(/^(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?(?!\d)/);
+    if (!match) {
+      return null;
+    }
+
+    const hasHours = match[3] !== undefined;
+    const hours = hasHours ? Number(match[1]) : 0;
+    const minutes = hasHours ? Number(match[2]) : Number(match[1]);
+    const seconds = Number(hasHours ? match[3] : match[2]);
+
+    if (seconds > 59 || minutes > 59) {
+      return null;
+    }
+
+    const total = hours * 3600 + minutes * 60 + seconds;
+    if (!Number.isFinite(total) || total < 0) {
+      return null;
+    }
+
+    return {
+      seconds: total,
+      prefix: match[0]
+    };
+  };
+
+  const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
   class TimelineScheduler {
     constructor({ layer, video, onStateChange, autoRelease = true, suppressInitialBacklog = false }) {
       this.layer = layer;
@@ -201,6 +232,11 @@
             return this.createTimelineItem(comment, duration);
           }
 
+          const offset = this.resolveCommentOffset(comment, duration);
+          if (offset) {
+            return this.createOffsetTimelineItem(comment, offset);
+          }
+
           const travelDuration = this.getTravelDuration(comment);
           const latestAppearAt = this.getLatestAppearAt(duration, travelDuration);
           const ratio = this.fallbackRatio(index, sorted.length);
@@ -234,7 +270,68 @@
         };
       }
 
+      const timelineDuration = duration || this.getDuration() || this.lastDuration || 1;
+      const offset = this.resolveCommentOffset(comment, timelineDuration);
+      if (offset) {
+        return this.createOffsetTimelineItem(comment, offset);
+      }
+
       return this.createLateTimelineItem(comment);
+    }
+
+    createOffsetTimelineItem(comment, offset) {
+      const stripped = this.stripCommentLeadingTime(comment, offset.prefix);
+
+      return {
+        id: comment.id,
+        text: stripped.text,
+        comment: stripped.comment,
+        order: comment.order,
+        appearAt: offset.seconds
+      };
+    }
+
+    stripCommentLeadingTime(comment, prefix) {
+      if (!comment || !prefix) {
+        return { comment, text: comment ? comment.text : "" };
+      }
+
+      const prefixRegex = new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*`);
+      const fragments = Array.isArray(comment.fragments) && comment.fragments.length
+        ? comment.fragments.map((fragment, index) => {
+            if (index !== 0 || !fragment || fragment.type !== "text") {
+              return fragment;
+            }
+
+            return { ...fragment, text: String(fragment.text || "").replace(prefixRegex, "") };
+          })
+        : null;
+      const text = String(comment.text || "").replace(prefixRegex, "");
+
+      return {
+        text,
+        comment: { ...comment, text, fragments }
+      };
+    }
+
+    resolveCommentOffset(comment, duration) {
+      if (
+        !comment ||
+        comment.source === "live-chat-replay" ||
+        comment.source === "live-chat" ||
+        isFiniteNumber(comment.appearAt)
+      ) {
+        return null;
+      }
+
+      const parsed = parseLeadingTime(comment.text);
+      if (!parsed) {
+        return null;
+      }
+
+      const travelDuration = this.getTravelDuration(comment);
+      const latestAppearAt = this.getLatestAppearAt(duration, travelDuration);
+      return parsed.seconds <= latestAppearAt ? parsed : null;
     }
 
     createLateTimelineItem(comment) {

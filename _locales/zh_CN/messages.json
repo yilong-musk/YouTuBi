@@ -63,6 +63,24 @@
   "watchToggleOnTitle": {
     "message": "开启弹幕"
   },
+  "sendDanmakuAria": {
+    "message": "发送弹幕"
+  },
+  "sendDanmakuTitle": {
+    "message": "发送弹幕"
+  },
+  "sendDanmakuPlaceholder": {
+    "message": "输入内容，回车发送"
+  },
+  "sendDanmakuFailed": {
+    "message": "发送失败：$1"
+  },
+  "sendDanmakuLoginRequired": {
+    "message": "请先登录 YouTube 再发送弹幕"
+  },
+  "logSendCommentFailed": {
+    "message": "[Youtubi] 评论发送失败"
+  },
   "replyLoading": {
     "message": "加载回复..."
   },

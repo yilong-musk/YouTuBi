@@ -327,6 +327,7 @@
       this.loadedCount = 0;
       this.order = 0;
       this.replyOrder = 0;
+      this.createCommentParams = "";
       this.seen = new Set();
       this.replyCache = new Map();
       this.replyInflight = new Map();
@@ -389,6 +390,7 @@
             return;
           }
 
+          this.captureCreateCommentParams(initial);
           const result = this.emitFromResponse(initial);
           continuation = findInitialCommentContinuation(initial);
           this.accumulateFetchResult(result);
@@ -420,6 +422,7 @@
             return;
           }
 
+          this.captureCreateCommentParams(response);
           const result = this.emitFromResponse(response);
           continuation = findNextContinuation(response);
           this.accumulateFetchResult(result);
@@ -503,6 +506,17 @@
 
     async fetchNext(config, body) {
       return innertube.fetchNext(config, body, this.abortController && this.abortController.signal);
+    }
+
+    captureCreateCommentParams(response) {
+      if (this.createCommentParams || !response || typeof response !== "object") {
+        return;
+      }
+
+      const candidate = innertube.findCreateCommentParams(response);
+      if (typeof candidate === "string" && candidate) {
+        this.createCommentParams = candidate;
+      }
     }
 
     emitFromResponse(response) {
@@ -651,6 +665,7 @@
       this.onComment = null;
       this.onStatus = null;
       this.config = null;
+      this.createCommentParams = "";
       this.seen.clear();
       this.replyCache.clear();
       this.replyInflight.clear();

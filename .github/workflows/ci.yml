@@ -122,6 +122,6 @@ jobs:
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.zip_name }}
+          name: youtubi-package-${{ steps.meta.outputs.version }}
           path: dist/${{ steps.meta.outputs.zip_name }}
           if-no-files-found: error

@@ -80,3 +80,48 @@ jobs:
             }
           }
           NODE
+
+  package:
+    name: Package
+    needs: validate
+    runs-on: ubuntu-latest
+
+    env:
+      EXTENSION_SLUG: youtubi
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(node -p "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8')).version")"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "zip_name=${EXTENSION_SLUG}-${version}.zip" >> "${GITHUB_OUTPUT}"
+
+      - name: Package extension
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          zip_path="dist/${{ steps.meta.outputs.zip_name }}"
+          mkdir -p dist
+          zip -r "${zip_path}" manifest.json _locales assets src README.md CHANGELOG.md -x "*.DS_Store"
+
+          unzip -Z1 "${zip_path}" | grep -qx "manifest.json"
+          if unzip -Z1 "${zip_path}" | grep -q "^${EXTENSION_SLUG}/"; then
+            echo "::error::Zip package must not wrap files in a project directory."
+            exit 1
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.zip_name }}
+          path: dist/${{ steps.meta.outputs.zip_name }}
+          if-no-files-found: error

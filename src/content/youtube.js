@@ -48,6 +48,7 @@
   };
 
   const CHAT_INTERFACE_RETRY_COUNT = 16;
+  const COMPOSER_RESUME_CLICK_WINDOW_MS = 400;
 
   class YoutubiApp {
     constructor() {
@@ -71,9 +72,12 @@
       this.composer = null;
       this.composerInput = null;
       this.composerPausedPlayback = false;
+      this.composerResumePending = false;
+      this.composerResumeTimer = 0;
       this.composerToastTimer = 0;
       this.boundComposerPointerDown = (event) => this.handleComposerOutsidePointer(event);
       this.boundComposerKeyDown = (event) => this.handleComposerKeyDown(event);
+      this.boundComposerResumeClick = () => this.finishComposerPlaybackResume();
       this.unsubscribeSettings = null;
       this.routeTimer = 0;
       this.retryTimer = 0;
@@ -1036,6 +1040,8 @@
         return;
       }
 
+      this.cancelComposerPlaybackResume();
+
       const video = this.playbackController && this.playbackController.video;
       this.composerPausedPlayback = Boolean(video && !video.paused);
       if (video && this.composerPausedPlayback) {
@@ -1064,25 +1070,70 @@
       this.updateDebugState({ status: "composer-open" });
     }
 
-    closeDanmakuComposer() {
+    closeDanmakuComposer(fromPointer = false) {
       if (!this.composer) {
         return;
       }
+
+      const shouldResume = this.composerPausedPlayback;
+      this.composerPausedPlayback = false;
 
       this.composer.remove();
       this.composer = null;
       this.composerInput = null;
       document.removeEventListener("pointerdown", this.boundComposerPointerDown, true);
 
-      if (this.composerPausedPlayback) {
-        this.composerPausedPlayback = false;
-        const video = this.playbackController && this.playbackController.video;
-        if (video) {
-          video.play().catch(() => {});
+      if (shouldResume) {
+        if (fromPointer) {
+          this.scheduleComposerPlaybackResume();
+        } else {
+          this.cancelComposerPlaybackResume();
+          this.resumeComposerPlayback();
         }
       }
 
       this.updateDebugState({ status: "composer-closed" });
+    }
+
+    scheduleComposerPlaybackResume() {
+      this.cancelComposerPlaybackResume();
+      this.composerResumePending = true;
+      document.addEventListener("click", this.boundComposerResumeClick);
+      this.composerResumeTimer = window.setTimeout(
+        () => this.finishComposerPlaybackResume(),
+        COMPOSER_RESUME_CLICK_WINDOW_MS
+      );
+    }
+
+    finishComposerPlaybackResume() {
+      document.removeEventListener("click", this.boundComposerResumeClick);
+      window.clearTimeout(this.composerResumeTimer);
+      this.composerResumeTimer = 0;
+
+      if (!this.composerResumePending) {
+        return;
+      }
+
+      this.composerResumePending = false;
+      this.resumeComposerPlayback();
+    }
+
+    cancelComposerPlaybackResume() {
+      this.composerResumePending = false;
+      document.removeEventListener("click", this.boundComposerResumeClick);
+      window.clearTimeout(this.composerResumeTimer);
+      this.composerResumeTimer = 0;
+    }
+
+    resumeComposerPlayback() {
+      const video = this.playbackController && this.playbackController.video;
+      if (!video || !video.isConnected || video.ended) {
+        return;
+      }
+
+      if (video.paused) {
+        video.play().catch(() => {});
+      }
     }
 
     handleComposerKeyDown(event) {
@@ -1127,7 +1178,7 @@
         return;
       }
 
-      this.closeDanmakuComposer();
+      this.closeDanmakuComposer(true);
     }
 
     async submitDanmakuComment(fullText, displayText) {
@@ -1201,7 +1252,17 @@
         throw new Error("youtubei createCommentParams missing");
       }
 
-      const response = await innertube.createComment(config, params, text);
+      let response;
+      try {
+        response = await innertube.createComment(config, params, text);
+      } catch (error) {
+        if (error && (error.status === 401 || error.status === 403)) {
+          throw new Error(t("sendDanmakuLoginRequired", null, "Sign in to YouTube to send danmaku"));
+        }
+
+        throw error;
+      }
+
       const commentError = this.getCommentError(response);
       if (commentError) {
         console.info(t("logSendCommentFailed", null, "[Youtubi] Comment failed"), {
@@ -1225,7 +1286,7 @@
     }
 
     getCommentError(response) {
-      if (!response || typeof response !== "object") {
+      if (!response || typeof response !== "object" || Array.isArray(response)) {
         return "youtubei empty response";
       }
 
@@ -1261,7 +1322,13 @@
       const hasCommentEntity = Array.isArray(mutations) && mutations.some((mutation) =>
         mutation && mutation.payload && mutation.payload.commentEntityPayload
       );
-      if (!hasCommentEntity) {
+
+      const hasKnownPayload =
+        Boolean(response.responseContext) ||
+        Boolean(response.frameworkUpdates) ||
+        Boolean(response.actions) ||
+        hasCommentEntity;
+      if (!hasKnownPayload) {
         return "youtubei comment not created";
       }
 
@@ -1619,6 +1686,7 @@
       this.composer = null;
       this.composerInput = null;
       this.composerPausedPlayback = false;
+      this.cancelComposerPlaybackResume();
       document.removeEventListener("pointerdown", this.boundComposerPointerDown, true);
 
       if (this.toggleButton) {

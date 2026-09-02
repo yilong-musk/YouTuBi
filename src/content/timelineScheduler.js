@@ -26,7 +26,7 @@
     const minutes = hasHours ? Number(match[2]) : Number(match[1]);
     const seconds = Number(hasHours ? match[3] : match[2]);
 
-    if (seconds > 59 || (hasHours && minutes > 59)) {
+    if (seconds > 59 || minutes > 59) {
       return null;
     }
 
@@ -296,7 +296,7 @@
         return { comment, text: comment ? comment.text : "" };
       }
 
-      const prefixRegex = new RegExp(`^${escapeRegExp(prefix)}\\s*`);
+      const prefixRegex = new RegExp(`^\\s*${escapeRegExp(prefix)}\\s*`);
       const fragments = Array.isArray(comment.fragments) && comment.fragments.length
         ? comment.fragments.map((fragment, index) => {
             if (index !== 0 || !fragment || fragment.type !== "text") {

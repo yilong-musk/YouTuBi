@@ -680,7 +680,13 @@
     return extractConfig();
   };
 
-  const fetchEndpoint = async (endpoint, config, body, signal) => {
+  const buildEndpointError = (endpoint, response) => {
+    const error = new Error(`youtubei ${endpoint} failed: ${response.status}`);
+    error.status = response.status;
+    return error;
+  };
+
+  const fetchEndpoint = async (endpoint, config, body, signal, options = {}) => {
     const headers = {
       "content-type": "application/json",
       "x-youtube-client-name": config.clientName,
@@ -691,12 +697,14 @@
       headers["x-goog-visitor-id"] = config.visitorData;
     }
 
-    const authorization = await buildSapisidHash();
-    if (authorization) {
-      headers.authorization = authorization;
-      headers["x-goog-authuser"] = "0";
-      headers["x-origin"] = "https://www.youtube.com";
-      headers["x-youtube-bootstrap-logged-in"] = "true";
+    if (options.authorize) {
+      const authorization = await buildSapisidHash();
+      if (authorization) {
+        headers.authorization = authorization;
+        headers["x-goog-authuser"] = "0";
+        headers["x-origin"] = "https://www.youtube.com";
+        headers["x-youtube-bootstrap-logged-in"] = "true";
+      }
     }
 
     const response = await fetch(
@@ -714,7 +722,7 @@
     );
 
     if (!response.ok) {
-      throw new Error(`youtubei ${endpoint} failed: ${response.status}`);
+      throw buildEndpointError(endpoint, response);
     }
 
     return response.json();
@@ -748,31 +756,56 @@
 
   const fetchNext = (config, body, signal) => fetchEndpoint("next", config, body, signal);
 
-  const findCreateCommentParams = (...sources) => {
-    let params = "";
+  const scanCreateCommentParams = (value) => {
+    if (!value || typeof value !== "object") {
+      return "";
+    }
 
-    for (const source of sources) {
-      if (params || !source || typeof source !== "object") {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const found = scanCreateCommentParams(item);
+        if (found) {
+          return found;
+        }
+      }
+      return "";
+    }
+
+    const endpoint = value.createCommentEndpoint;
+    if (endpoint && typeof endpoint === "object") {
+      const candidate = endpoint.createCommentParams;
+      if (typeof candidate === "string" && candidate) {
+        return candidate;
+      }
+    }
+
+    for (const key of Object.keys(value)) {
+      if (key === "createCommentEndpoint") {
         continue;
       }
 
-      walk(source, (node) => {
-        if (params) {
-          return false;
-        }
-
-        const candidate =
-          getNested(node, ["createCommentEndpoint", "createCommentParams"]) ||
-          node.createCommentParams;
-        if (typeof candidate === "string" && candidate) {
-          params = candidate;
-        }
-
-        return params ? false : undefined;
-      });
+      const found = scanCreateCommentParams(value[key]);
+      if (found) {
+        return found;
+      }
     }
 
-    return params || null;
+    return "";
+  };
+
+  const findCreateCommentParams = (...sources) => {
+    for (const source of sources) {
+      if (!source || typeof source !== "object") {
+        continue;
+      }
+
+      const params = scanCreateCommentParams(source);
+      if (params) {
+        return params;
+      }
+    }
+
+    return null;
   };
 
   const createComment = (config, params, text, signal) =>
@@ -783,7 +816,8 @@
         createCommentParams: params,
         commentText: text
       },
-      signal
+      signal,
+      { authorize: true }
     );
 
   const buildCreateCommentParams = (videoId) => {

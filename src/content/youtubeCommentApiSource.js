@@ -513,20 +513,10 @@
         return;
       }
 
-      walk(response, (node) => {
-        if (this.createCommentParams) {
-          return false;
-        }
-
-        const candidate =
-          getNested(node, ["createCommentEndpoint", "createCommentParams"]) ||
-          node.createCommentParams;
-        if (typeof candidate === "string" && candidate) {
-          this.createCommentParams = candidate;
-        }
-
-        return this.createCommentParams ? false : undefined;
-      });
+      const candidate = innertube.findCreateCommentParams(response);
+      if (typeof candidate === "string" && candidate) {
+        this.createCommentParams = candidate;
+      }
     }
 
     emitFromResponse(response) {

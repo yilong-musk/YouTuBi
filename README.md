@@ -1,5 +1,7 @@
 # YouTuBi
 
+[English](README.en.md) · 简体中文
+
 把 YouTube 评论和直播聊天变成随视频播放的弹幕的浏览器扩展（支持 Chrome / Edge）。
 
 ## 安装

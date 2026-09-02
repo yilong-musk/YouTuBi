@@ -1,5 +1,7 @@
 # YouTuBi
 
+English · [简体中文](README.md)
+
 A browser extension (Chrome / Edge) that turns YouTube comments and live chat into danmaku overlays that play along with the video.
 
 ## Install

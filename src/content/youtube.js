@@ -1176,12 +1176,27 @@
         typeof innertube.extractInitialData === "function" ? innertube.extractInitialData() : null,
         ...this.getCurrentPageData(this.activeVideoId)
       ];
-      const params =
-        (typeof innertube.buildCreateCommentParams === "function"
-          ? innertube.buildCreateCommentParams(this.activeVideoId)
-          : null) ||
-        (this.apiCommentSource && this.apiCommentSource.createCommentParams) ||
+      let params = (this.apiCommentSource && this.apiCommentSource.createCommentParams) ||
         innertube.findCreateCommentParams(...sources);
+
+      if (!params && typeof innertube.fetchCommentsSection === "function") {
+        try {
+          const sectionResponse = await innertube.fetchCommentsSection(config, this.activeVideoId);
+          if (sectionResponse) {
+            params = innertube.findCreateCommentParams(sectionResponse);
+            if (params && this.apiCommentSource) {
+              this.apiCommentSource.createCommentParams = params;
+            }
+          }
+        } catch (error) {
+          console.info(t("logSendCommentFailed", null, "[Youtubi] Comment failed"), error);
+        }
+      }
+
+      if (!params && typeof innertube.buildCreateCommentParams === "function") {
+        params = innertube.buildCreateCommentParams(this.activeVideoId);
+      }
+
       if (!params) {
         throw new Error("youtubei createCommentParams missing");
       }
@@ -1189,11 +1204,24 @@
       const response = await innertube.createComment(config, params, text);
       const commentError = this.getCommentError(response);
       if (commentError) {
-        console.info(t("logSendCommentFailed", null, "[Youtubi] Comment failed"), { text, response });
+        console.info(t("logSendCommentFailed", null, "[Youtubi] Comment failed"), {
+          text,
+          params,
+          response: this.stringifyResponse(response)
+        });
         throw new Error(commentError);
       }
 
       return response;
+    }
+
+    stringifyResponse(response) {
+      try {
+        const text = JSON.stringify(response);
+        return text && text.length > 4000 ? `${text.slice(0, 4000)}...` : text;
+      } catch (error) {
+        return String(response);
+      }
     }
 
     getCommentError(response) {

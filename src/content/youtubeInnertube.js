@@ -776,6 +776,49 @@
     return encodeURIComponent(btoa(binary));
   };
 
+  const buildCommentsSectionContinuation = (videoId) => {
+    const id = String(videoId || "");
+    if (!id) {
+      return null;
+    }
+
+    const idBytes = new TextEncoder().encode(id);
+    const targetBytes = new TextEncoder().encode("comments-section");
+
+    const optionsBytes = [
+      34, idBytes.length, ...idBytes,
+      120, 2
+    ];
+    const paramsBytes = [
+      34, optionsBytes.length, ...optionsBytes,
+      66, targetBytes.length, ...targetBytes
+    ];
+    const contextBytes = [
+      18, idBytes.length, ...idBytes
+    ];
+    const bytes = [
+      18, contextBytes.length, ...contextBytes,
+      24, 6,
+      50, paramsBytes.length, ...paramsBytes
+    ];
+
+    let binary = "";
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+
+    return encodeURIComponent(btoa(binary));
+  };
+
+  const fetchCommentsSection = (config, videoId, signal) => {
+    const continuation = buildCommentsSectionContinuation(videoId);
+    if (!continuation) {
+      return Promise.resolve(null);
+    }
+
+    return fetchNext(config, { continuation }, signal);
+  };
+
   window.YoutubiInnertube = {
     sleep,
     isAbortError,
@@ -801,6 +844,8 @@
     fetchNext,
     findCreateCommentParams,
     createComment,
-    buildCreateCommentParams
+    buildCreateCommentParams,
+    buildCommentsSectionContinuation,
+    fetchCommentsSection
   };
 })();

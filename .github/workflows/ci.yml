@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate JavaScript syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          while IFS= read -r -d '' file; do
+            node --check "$file"
+          done < <(find src -name '*.js' -print0)
+
+      - name: Validate JSON and i18n keys
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node <<'NODE'
+          const fs = require("fs");
+
+          JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          JSON.parse(fs.readFileSync("_locales/en/messages.json", "utf8"));
+          JSON.parse(fs.readFileSync("_locales/zh_CN/messages.json", "utf8"));
+
+          const manifest = JSON.parse(fs.readFileSync("manifest.json", "utf8"));
+          const iconPaths = [
+            ...Object.values(manifest.icons || {}),
+            ...Object.values((manifest.action && manifest.action.default_icon) || {})
+          ];
+
+          for (const iconPath of iconPaths) {
+            if (!fs.existsSync(iconPath)) {
+              throw new Error(`Missing icon: ${iconPath}`);
+            }
+          }
+
+          const files = [
+            "manifest.json",
+            "src/shared/i18n.js",
+            "src/popup/index.html",
+            "src/popup/popup.js",
+            "src/content/danmakuLayer.js",
+            "src/content/youtube.js",
+            "src/content/youtubeCommentApiSource.js"
+          ];
+          const text = files.map((file) => fs.readFileSync(file, "utf8")).join("\n");
+          const keys = new Set();
+
+          for (const match of text.matchAll(/__MSG_([A-Za-z0-9_]+)__/g)) {
+            keys.add(match[1]);
+          }
+          for (const match of text.matchAll(/(?:data-i18n(?:-[a-z-]+)?=")([A-Za-z0-9_]+)"/g)) {
+            keys.add(match[1]);
+          }
+          for (const match of text.matchAll(/\bt\("([A-Za-z0-9_]+)"/g)) {
+            keys.add(match[1]);
+          }
+
+          for (const locale of ["en", "zh_CN"]) {
+            const messages = JSON.parse(fs.readFileSync(`_locales/${locale}/messages.json`, "utf8"));
+            const missing = [...keys].filter((key) => !messages[key]);
+            if (missing.length) {
+              throw new Error(`${locale} missing i18n keys: ${missing.join(", ")}`);
+            }
+          }
+          NODE
+
+  package:
+    name: Package
+    needs: validate
+    runs-on: ubuntu-latest
+
+    env:
+      EXTENSION_SLUG: youtubi
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="$(node -p "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8')).version")"
+
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "zip_name=${EXTENSION_SLUG}-${version}.zip" >> "${GITHUB_OUTPUT}"
+
+      - name: Package extension
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          zip_path="dist/${{ steps.meta.outputs.zip_name }}"
+          mkdir -p dist
+          zip -r "${zip_path}" manifest.json _locales assets src README.md CHANGELOG.md -x "*.DS_Store"
+
+          unzip -Z1 "${zip_path}" | grep -qx "manifest.json"
+          if unzip -Z1 "${zip_path}" | grep -q "^${EXTENSION_SLUG}/"; then
+            echo "::error::Zip package must not wrap files in a project directory."
+            exit 1
+          fi
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.zip_name }}
+          path: dist/${{ steps.meta.outputs.zip_name }}
+          if-no-files-found: error

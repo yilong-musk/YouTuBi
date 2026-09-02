@@ -37,6 +37,16 @@
   const t = (key, substitutions, fallback) =>
     window.YoutubiI18n ? window.YoutubiI18n.t(key, substitutions, fallback) : fallback;
 
+  const formatTime = (seconds) => {
+    const total = Math.max(0, Math.floor(Number(seconds) || 0));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    const pad = (value) => String(value).padStart(2, "0");
+
+    return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
+  };
+
   const CHAT_INTERFACE_RETRY_COUNT = 16;
 
   class YoutubiApp {
@@ -57,6 +67,13 @@
       this.toggleMountAttempts = 0;
       this.toggleObserver = null;
       this.toggleObserverTarget = null;
+      this.sendButton = null;
+      this.composer = null;
+      this.composerInput = null;
+      this.composerPausedPlayback = false;
+      this.composerToastTimer = 0;
+      this.boundComposerPointerDown = (event) => this.handleComposerOutsidePointer(event);
+      this.boundComposerKeyDown = (event) => this.handleComposerKeyDown(event);
       this.unsubscribeSettings = null;
       this.routeTimer = 0;
       this.retryTimer = 0;
@@ -805,6 +822,20 @@
       });
     }
 
+    createSendButton() {
+      this.sendButton = document.createElement("button");
+      this.sendButton.type = "button";
+      this.sendButton.className = "ytbm-watch-send";
+      this.sendButton.setAttribute("aria-label", t("sendDanmakuAria", null, "Send danmaku"));
+      this.sendButton.title = t("sendDanmakuTitle", null, "Send danmaku");
+      this.sendButton.textContent = "\u270e";
+      this.sendButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.openDanmakuComposer();
+      });
+    }
+
     attachToggleToTarget(target) {
       if (!this.toggleButton || !target || !target.container || !target.anchor) {
         return false;
@@ -812,8 +843,16 @@
 
       this.clearFloatingTogglePosition();
 
+      if (!this.sendButton) {
+        this.createSendButton();
+      }
+
       if (this.toggleButton.parentElement !== target.container || this.toggleButton.nextElementSibling !== target.anchor) {
         target.container.insertBefore(this.toggleButton, target.anchor);
+      }
+
+      if (this.sendButton.parentElement !== target.container || this.sendButton.nextElementSibling !== this.toggleButton) {
+        target.container.insertBefore(this.sendButton, this.toggleButton);
       }
 
       this.observeToggleContainer(target.container);
@@ -896,16 +935,25 @@
         return;
       }
 
+      if (!this.sendButton) {
+        this.createSendButton();
+      }
+
       if (this.toggleButton.parentElement !== document.body) {
         document.body.appendChild(this.toggleButton);
       }
 
+      if (this.sendButton.parentElement !== document.body || this.sendButton.nextElementSibling !== this.toggleButton) {
+        document.body.insertBefore(this.sendButton, this.toggleButton);
+      }
+
       this.toggleButton.classList.add("is-floating");
+      this.sendButton.classList.add("is-floating");
       this.updateFloatingTogglePosition();
     }
 
     updateFloatingTogglePosition() {
-      if (!this.toggleButton) {
+      if (!this.toggleButton || !this.sendButton) {
         return;
       }
 
@@ -917,10 +965,16 @@
       const likeRect = likeButton.getBoundingClientRect();
       const width = 78;
       const height = Math.max(36, Math.min(40, likeRect.height || 36));
-      const left = Math.max(8, likeRect.left - width - 8);
+      const sendWidth = 36;
+      const left = Math.max(8, likeRect.left - sendWidth - 8 - width - 8);
       const top = Math.max(8, likeRect.top + (likeRect.height - height) / 2);
 
-      this.toggleButton.style.left = `${Math.round(left)}px`;
+      this.sendButton.style.left = `${Math.round(left)}px`;
+      this.sendButton.style.top = `${Math.round(top)}px`;
+      this.sendButton.style.width = `${sendWidth}px`;
+      this.sendButton.style.height = `${height}px`;
+
+      this.toggleButton.style.left = `${Math.round(left + sendWidth + 8)}px`;
       this.toggleButton.style.top = `${Math.round(top)}px`;
       this.toggleButton.style.width = `${width}px`;
       this.toggleButton.style.height = `${height}px`;
@@ -936,6 +990,14 @@
       this.toggleButton.style.top = "";
       this.toggleButton.style.width = "";
       this.toggleButton.style.height = "";
+
+      if (this.sendButton) {
+        this.sendButton.classList.remove("is-floating");
+        this.sendButton.style.left = "";
+        this.sendButton.style.top = "";
+        this.sendButton.style.width = "";
+        this.sendButton.style.height = "";
+      }
     }
 
     observeToggleContainer(container) {
@@ -967,6 +1029,180 @@
         this.scheduleToggleVisibilityCheck();
       });
       this.toggleObserver.observe(container, { childList: true });
+    }
+
+    openDanmakuComposer() {
+      if (!this.layer || !this.layer.playerElement || this.composer) {
+        return;
+      }
+
+      const video = this.playbackController && this.playbackController.video;
+      this.composerPausedPlayback = Boolean(video && !video.paused);
+      if (video && this.composerPausedPlayback) {
+        video.pause();
+      }
+
+      const player = this.layer.playerElement;
+      this.composer = document.createElement("div");
+      this.composer.className = "ytbm-composer";
+      this.composer.setAttribute("role", "dialog");
+      this.composer.setAttribute("aria-label", t("sendDanmakuAria", null, "Send danmaku"));
+
+      this.composerInput = document.createElement("input");
+      this.composerInput.className = "ytbm-composer-input";
+      this.composerInput.type = "text";
+      this.composerInput.maxLength = 500;
+      this.composerInput.autocomplete = "off";
+      this.composerInput.placeholder = t("sendDanmakuPlaceholder", null, "Type a message, press Enter to send");
+
+      this.composer.append(this.composerInput);
+      player.appendChild(this.composer);
+
+      this.composerInput.addEventListener("keydown", this.boundComposerKeyDown);
+      document.addEventListener("pointerdown", this.boundComposerPointerDown, true);
+      this.composerInput.focus();
+      this.updateDebugState({ status: "composer-open" });
+    }
+
+    closeDanmakuComposer() {
+      if (!this.composer) {
+        return;
+      }
+
+      this.composer.remove();
+      this.composer = null;
+      this.composerInput = null;
+      document.removeEventListener("pointerdown", this.boundComposerPointerDown, true);
+
+      if (this.composerPausedPlayback) {
+        this.composerPausedPlayback = false;
+        const video = this.playbackController && this.playbackController.video;
+        if (video) {
+          video.play().catch(() => {});
+        }
+      }
+
+      this.updateDebugState({ status: "composer-closed" });
+    }
+
+    handleComposerKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        this.closeDanmakuComposer();
+        return;
+      }
+
+      if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const text = this.composerInput ? this.composerInput.value.trim() : "";
+      if (!text) {
+        return;
+      }
+
+      const video = this.playbackController && this.playbackController.video;
+      const currentTime = video && Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      const fullText = `${formatTime(currentTime)} ${text}`;
+
+      this.closeDanmakuComposer();
+      this.submitDanmakuComment(fullText);
+    }
+
+    handleComposerOutsidePointer(event) {
+      if (!this.composer) {
+        return;
+      }
+
+      const target = event.target;
+      if (this.composer.contains(target)) {
+        return;
+      }
+
+      if (this.sendButton && (target === this.sendButton || this.sendButton.contains(target))) {
+        return;
+      }
+
+      this.closeDanmakuComposer();
+    }
+
+    async submitDanmakuComment(fullText) {
+      const videoId = this.activeVideoId;
+      if (!videoId || !this.isCurrentVideo(videoId)) {
+        return;
+      }
+
+      try {
+        await this.postComment(fullText);
+        if (!this.isCurrentVideo(videoId)) {
+          return;
+        }
+
+        if (this.playbackController) {
+          this.playbackController.addRealtimeItem({
+            id: `self-${Date.now()}`,
+            text: fullText,
+            source: "self"
+          });
+        }
+        this.updateDebugState({ status: "comment-sent" });
+      } catch (error) {
+        if (this.isCurrentVideo(videoId)) {
+          console.info(t("logSendCommentFailed", null, "[Youtubi] Comment failed"), error);
+          this.showPlayerToast(
+            t("sendDanmakuFailed", error && error.message ? error.message : String(error), "Failed to send: $1")
+          );
+        }
+      }
+    }
+
+    async postComment(text) {
+      const innertube = window.YoutubiInnertube;
+      if (!innertube || typeof innertube.createComment !== "function") {
+        throw new Error("youtubei unavailable");
+      }
+
+      const config = (this.apiCommentSource && this.apiCommentSource.config) ||
+        await innertube.waitForConfig(() => !this.activeVideoId);
+      if (!config || !config.apiKey || !config.context) {
+        throw new Error("youtubei config missing");
+      }
+
+      const sources = [
+        typeof innertube.extractInitialData === "function" ? innertube.extractInitialData() : null,
+        ...this.getCurrentPageData(this.activeVideoId)
+      ];
+      const params = innertube.findCreateCommentParams(...sources);
+      if (!params) {
+        throw new Error("youtubei createCommentParams missing");
+      }
+
+      return innertube.createComment(config, params, text);
+    }
+
+    showPlayerToast(message) {
+      if (!this.layer || !this.layer.playerElement) {
+        return;
+      }
+
+      const player = this.layer.playerElement;
+      let toast = player.querySelector(".ytbm-player-toast");
+      if (!toast) {
+        toast = document.createElement("div");
+        toast.className = "ytbm-player-toast";
+        player.appendChild(toast);
+      }
+
+      toast.textContent = message;
+      toast.hidden = false;
+      window.clearTimeout(this.composerToastTimer);
+      this.composerToastTimer = window.setTimeout(() => {
+        toast.hidden = true;
+      }, 4000);
     }
 
     isCommentApiTerminalStatus(status) {
@@ -1257,22 +1493,38 @@
     disposeToggleButton() {
       window.clearTimeout(this.toggleMountTimer);
       window.clearTimeout(this.toggleVisibilityTimer);
+      window.clearTimeout(this.composerToastTimer);
       this.toggleMountTimer = 0;
       this.toggleVisibilityTimer = 0;
       this.toggleMountAttempts = 0;
+      this.composerToastTimer = 0;
 
       if (this.toggleObserver) {
         this.toggleObserver.disconnect();
       }
 
+      if (this.composer) {
+        this.composer.remove();
+      }
+
+      this.composer = null;
+      this.composerInput = null;
+      this.composerPausedPlayback = false;
+      document.removeEventListener("pointerdown", this.boundComposerPointerDown, true);
+
       if (this.toggleButton) {
         this.toggleButton.remove();
+      }
+
+      if (this.sendButton) {
+        this.sendButton.remove();
       }
 
       this.toggleButton = null;
       this.toggleButtonLabel = null;
       this.toggleObserver = null;
       this.toggleObserverTarget = null;
+      this.sendButton = null;
     }
 
     dispose() {

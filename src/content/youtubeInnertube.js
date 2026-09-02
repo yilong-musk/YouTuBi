@@ -714,6 +714,44 @@
 
   const fetchNext = (config, body, signal) => fetchEndpoint("next", config, body, signal);
 
+  const findCreateCommentParams = (...sources) => {
+    let params = "";
+
+    for (const source of sources) {
+      if (params || !source || typeof source !== "object") {
+        continue;
+      }
+
+      walk(source, (node) => {
+        if (params) {
+          return false;
+        }
+
+        const candidate =
+          getNested(node, ["createCommentEndpoint", "createCommentParams"]) ||
+          node.createCommentParams;
+        if (typeof candidate === "string" && candidate) {
+          params = candidate;
+        }
+
+        return params ? false : undefined;
+      });
+    }
+
+    return params || null;
+  };
+
+  const createComment = (config, params, text, signal) =>
+    fetchEndpoint(
+      "comment/create_comment",
+      config,
+      {
+        createCommentParams: params,
+        commentText: text
+      },
+      signal
+    );
+
   window.YoutubiInnertube = {
     sleep,
     isAbortError,
@@ -736,6 +774,8 @@
     findLiveChatContinuation,
     waitForConfig,
     fetchEndpoint,
-    fetchNext
+    fetchNext,
+    findCreateCommentParams,
+    createComment
   };
 })();

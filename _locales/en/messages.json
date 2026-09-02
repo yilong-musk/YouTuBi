@@ -63,6 +63,21 @@
   "watchToggleOnTitle": {
     "message": "Turn on danmaku"
   },
+  "sendDanmakuAria": {
+    "message": "Send danmaku"
+  },
+  "sendDanmakuTitle": {
+    "message": "Send danmaku"
+  },
+  "sendDanmakuPlaceholder": {
+    "message": "Type a message, press Enter to send"
+  },
+  "sendDanmakuFailed": {
+    "message": "Failed to send: $1"
+  },
+  "logSendCommentFailed": {
+    "message": "[Youtubi] Comment failed"
+  },
   "replyLoading": {
     "message": "Loading replies..."
   },

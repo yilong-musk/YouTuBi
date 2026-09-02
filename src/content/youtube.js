@@ -1176,7 +1176,8 @@
         typeof innertube.extractInitialData === "function" ? innertube.extractInitialData() : null,
         ...this.getCurrentPageData(this.activeVideoId)
       ];
-      const params = innertube.findCreateCommentParams(...sources);
+      const params = (this.apiCommentSource && this.apiCommentSource.createCommentParams) ||
+        innertube.findCreateCommentParams(...sources);
       if (!params) {
         throw new Error("youtubei createCommentParams missing");
       }

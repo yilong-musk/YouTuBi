@@ -122,7 +122,7 @@ jobs:
           unzip -o -q "${zip_path}" -d dist/unpacked
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: youtubi-${{ steps.meta.outputs.version }}
           path: dist/unpacked

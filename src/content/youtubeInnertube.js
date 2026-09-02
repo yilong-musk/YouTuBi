@@ -752,6 +752,30 @@
       signal
     );
 
+  const buildCreateCommentParams = (videoId) => {
+    const id = String(videoId || "");
+    if (!id) {
+      return null;
+    }
+
+    const idBytes = new TextEncoder().encode(id);
+    const bytes = new Uint8Array(idBytes.length + 6);
+    bytes[0] = 18;
+    bytes[1] = idBytes.length;
+    bytes.set(idBytes, 2);
+    bytes[2 + idBytes.length] = 42;
+    bytes[3 + idBytes.length] = 0;
+    bytes[4 + idBytes.length] = 80;
+    bytes[5 + idBytes.length] = 7;
+
+    let binary = "";
+    for (const byte of bytes) {
+      binary += String.fromCharCode(byte);
+    }
+
+    return encodeURIComponent(btoa(binary));
+  };
+
   window.YoutubiInnertube = {
     sleep,
     isAbortError,
@@ -776,6 +800,7 @@
     fetchEndpoint,
     fetchNext,
     findCreateCommentParams,
-    createComment
+    createComment,
+    buildCreateCommentParams
   };
 })();

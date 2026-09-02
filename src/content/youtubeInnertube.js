@@ -691,6 +691,14 @@
       headers["x-goog-visitor-id"] = config.visitorData;
     }
 
+    const authorization = await buildSapisidHash();
+    if (authorization) {
+      headers.authorization = authorization;
+      headers["x-goog-authuser"] = "0";
+      headers["x-origin"] = "https://www.youtube.com";
+      headers["x-youtube-bootstrap-logged-in"] = "true";
+    }
+
     const response = await fetch(
       `${ENDPOINT_BASE}/${endpoint}?key=${encodeURIComponent(config.apiKey)}&prettyPrint=false`,
       {
@@ -710,6 +718,32 @@
     }
 
     return response.json();
+  };
+
+  const buildSapisidHash = async () => {
+    let sapisid = "";
+
+    try {
+      const match = document.cookie.match(/(?:^|;\s*)(?:SAPISID|__Secure-3PAPISID)=([^;]+)/);
+      sapisid = match ? match[1] : "";
+    } catch (error) {
+      return "";
+    }
+
+    if (!sapisid) {
+      return "";
+    }
+
+    const origin = "https://www.youtube.com";
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    try {
+      const digest = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(`${timestamp} ${sapisid} ${origin}`));
+      const hex = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `SAPISIDHASH ${timestamp}_${hex}`;
+    } catch (error) {
+      return "";
+    }
   };
 
   const fetchNext = (config, body, signal) => fetchEndpoint("next", config, body, signal);

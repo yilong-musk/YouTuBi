@@ -75,6 +75,9 @@
   "sendDanmakuFailed": {
     "message": "发送失败：$1"
   },
+  "sendDanmakuLoginRequired": {
+    "message": "请先登录 YouTube 再发送弹幕"
+  },
   "logSendCommentFailed": {
     "message": "[Youtubi] 评论发送失败"
   },

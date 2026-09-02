@@ -1229,8 +1229,20 @@
         return "youtubei empty response";
       }
 
+      const loggedOut = response.responseContext &&
+        response.responseContext.mainAppWebResponseContext &&
+        response.responseContext.mainAppWebResponseContext.loggedOut;
+      if (loggedOut) {
+        return t("sendDanmakuLoginRequired", null, "Sign in to YouTube to send danmaku");
+      }
+
       if (typeof response.errorMessage === "string" && response.errorMessage) {
         return response.errorMessage;
+      }
+
+      const actionError = this.getShowErrorActionMessage(response);
+      if (actionError) {
+        return actionError;
       }
 
       if (Array.isArray(response.actionResults)) {
@@ -1251,6 +1263,31 @@
       );
       if (!hasCommentEntity) {
         return "youtubei comment not created";
+      }
+
+      return "";
+    }
+
+    getShowErrorActionMessage(response) {
+      if (!Array.isArray(response.actions)) {
+        return "";
+      }
+
+      for (const action of response.actions) {
+        if (!action || !action.showErrorAction) {
+          continue;
+        }
+
+        const error = action.showErrorAction.errorMessage;
+        if (!error) {
+          continue;
+        }
+
+        const text = error.messageRenderer && error.messageRenderer.text;
+        const message = text && (text.simpleText || text.runs && text.runs.map((run) => run.text || "").join("")) || "";
+        if (message) {
+          return String(message);
+        }
       }
 
       return "";

@@ -75,6 +75,9 @@
   "sendDanmakuFailed": {
     "message": "Failed to send: $1"
   },
+  "sendDanmakuLoginRequired": {
+    "message": "Sign in to YouTube to send danmaku"
+  },
   "logSendCommentFailed": {
     "message": "[Youtubi] Comment failed"
   },

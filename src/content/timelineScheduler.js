@@ -12,6 +12,28 @@
 
   const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
+  const parseLeadingTimeSeconds = (text) => {
+    const normalized = String(text || "")
+      .replace(/\s+/g, " ")
+      .trim();
+    const match = normalized.match(/^(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?(?!\d)/);
+    if (!match) {
+      return null;
+    }
+
+    const hasHours = match[3] !== undefined;
+    const hours = hasHours ? Number(match[1]) : 0;
+    const minutes = hasHours ? Number(match[2]) : Number(match[1]);
+    const seconds = Number(hasHours ? match[3] : match[2]);
+
+    if (seconds > 59 || (hasHours && minutes > 59)) {
+      return null;
+    }
+
+    const total = hours * 3600 + minutes * 60 + seconds;
+    return Number.isFinite(total) && total >= 0 ? total : null;
+  };
+
   class TimelineScheduler {
     constructor({ layer, video, onStateChange, autoRelease = true, suppressInitialBacklog = false }) {
       this.layer = layer;
@@ -201,6 +223,11 @@
             return this.createTimelineItem(comment, duration);
           }
 
+          const offset = this.resolveCommentOffset(comment, duration);
+          if (isFiniteNumber(offset)) {
+            return this.createTimelineItem({ ...comment, appearAt: offset }, duration);
+          }
+
           const travelDuration = this.getTravelDuration(comment);
           const latestAppearAt = this.getLatestAppearAt(duration, travelDuration);
           const ratio = this.fallbackRatio(index, sorted.length);
@@ -234,7 +261,39 @@
         };
       }
 
+      const timelineDuration = duration || this.getDuration() || this.lastDuration || 1;
+      const offset = this.resolveCommentOffset(comment, timelineDuration);
+      if (isFiniteNumber(offset)) {
+        return {
+          id: comment.id,
+          text: comment.text,
+          comment,
+          order: comment.order,
+          appearAt: offset
+        };
+      }
+
       return this.createLateTimelineItem(comment);
+    }
+
+    resolveCommentOffset(comment, duration) {
+      if (
+        !comment ||
+        comment.source === "live-chat-replay" ||
+        comment.source === "live-chat" ||
+        isFiniteNumber(comment.appearAt)
+      ) {
+        return null;
+      }
+
+      const seconds = parseLeadingTimeSeconds(comment.text);
+      if (!isFiniteNumber(seconds)) {
+        return null;
+      }
+
+      const travelDuration = this.getTravelDuration(comment);
+      const latestAppearAt = this.getLatestAppearAt(duration, travelDuration);
+      return seconds <= latestAppearAt ? seconds : null;
     }
 
     createLateTimelineItem(comment) {

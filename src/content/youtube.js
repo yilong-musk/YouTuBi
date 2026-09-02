@@ -1110,7 +1110,7 @@
       const fullText = `${formatTime(currentTime)} ${text}`;
 
       this.closeDanmakuComposer();
-      this.submitDanmakuComment(fullText);
+      this.submitDanmakuComment(fullText, text);
     }
 
     handleComposerOutsidePointer(event) {
@@ -1130,7 +1130,7 @@
       this.closeDanmakuComposer();
     }
 
-    async submitDanmakuComment(fullText) {
+    async submitDanmakuComment(fullText, displayText) {
       const videoId = this.activeVideoId;
       if (!videoId || !this.isCurrentVideo(videoId)) {
         return;
@@ -1145,7 +1145,7 @@
         if (this.playbackController) {
           this.playbackController.addRealtimeItem({
             id: `self-${Date.now()}`,
-            text: fullText,
+            text: displayText || fullText,
             source: "self"
           });
         }
@@ -1186,7 +1186,46 @@
         throw new Error("youtubei createCommentParams missing");
       }
 
-      return innertube.createComment(config, params, text);
+      const response = await innertube.createComment(config, params, text);
+      const commentError = this.getCommentError(response);
+      if (commentError) {
+        console.info(t("logSendCommentFailed", null, "[Youtubi] Comment failed"), { text, response });
+        throw new Error(commentError);
+      }
+
+      return response;
+    }
+
+    getCommentError(response) {
+      if (!response || typeof response !== "object") {
+        return "youtubei empty response";
+      }
+
+      if (typeof response.errorMessage === "string" && response.errorMessage) {
+        return response.errorMessage;
+      }
+
+      if (Array.isArray(response.actionResults)) {
+        const failed = response.actionResults.find((result) => result && result.error);
+        if (failed && failed.error) {
+          const message = failed.error.message || failed.error.errorMessage || failed.error.errorCode;
+          if (message) {
+            return String(message);
+          }
+        }
+      }
+
+      const mutations = response.frameworkUpdates &&
+        response.frameworkUpdates.entityBatchUpdate &&
+        response.frameworkUpdates.entityBatchUpdate.mutations;
+      const hasCommentEntity = Array.isArray(mutations) && mutations.some((mutation) =>
+        mutation && mutation.payload && mutation.payload.commentEntityPayload
+      );
+      if (!hasCommentEntity) {
+        return "youtubei comment not created";
+      }
+
+      return "";
     }
 
     showPlayerToast(message) {

@@ -119,9 +119,11 @@ jobs:
             exit 1
           fi
 
+          unzip -o -q "${zip_path}" -d dist/unpacked
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: youtubi-package-${{ steps.meta.outputs.version }}
-          path: dist/${{ steps.meta.outputs.zip_name }}
+          path: dist/unpacked
           if-no-files-found: error

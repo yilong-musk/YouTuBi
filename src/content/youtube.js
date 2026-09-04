@@ -75,8 +75,12 @@
       this.composerResumePending = false;
       this.composerResumeTimer = 0;
       this.composerToastTimer = 0;
+      this.composerGuardVideo = null;
+      this.composerHoldingPause = false;
       this.boundComposerPointerDown = (event) => this.handleComposerOutsidePointer(event);
       this.boundComposerKeyDown = (event) => this.handleComposerKeyDown(event);
+      this.boundComposerStopPlayerKeys = (event) => event.stopPropagation();
+      this.boundComposerHoldPause = () => this.holdComposerPause();
       this.boundComposerResumeClick = () => this.finishComposerPlaybackResume();
       this.unsubscribeSettings = null;
       this.routeTimer = 0;
@@ -1044,8 +1048,8 @@
 
       const video = this.playbackController && this.playbackController.video;
       this.composerPausedPlayback = Boolean(video && !video.paused);
-      if (video && this.composerPausedPlayback) {
-        video.pause();
+      if (this.composerPausedPlayback) {
+        this.pauseComposerVideo();
       }
 
       const player = this.layer.playerElement;
@@ -1064,8 +1068,11 @@
       this.composer.append(this.composerInput);
       player.appendChild(this.composer);
 
-      this.composerInput.addEventListener("keydown", this.boundComposerKeyDown);
+      this.composerInput.addEventListener("keydown", this.boundComposerKeyDown, true);
+      this.composerInput.addEventListener("keyup", this.boundComposerStopPlayerKeys, true);
+      this.composerInput.addEventListener("keypress", this.boundComposerStopPlayerKeys, true);
       document.addEventListener("pointerdown", this.boundComposerPointerDown, true);
+      this.attachComposerPlaybackGuard();
       this.composerInput.focus();
       this.updateDebugState({ status: "composer-open" });
     }
@@ -1077,6 +1084,7 @@
 
       const shouldResume = this.composerPausedPlayback;
       this.composerPausedPlayback = false;
+      this.detachComposerPlaybackGuard();
 
       this.composer.remove();
       this.composer = null;
@@ -1136,10 +1144,62 @@
       }
     }
 
+    pauseComposerVideo() {
+      const video = this.playbackController && this.playbackController.video;
+      if (video && !video.paused) {
+        video.pause();
+      }
+
+      const player = this.layer && this.layer.playerElement;
+      if (player && typeof player.pauseVideo === "function") {
+        try {
+          player.pauseVideo();
+        } catch (error) {
+          // Player API can throw during teardown or ads.
+        }
+      }
+    }
+
+    attachComposerPlaybackGuard() {
+      this.detachComposerPlaybackGuard();
+      const video = this.playbackController && this.playbackController.video;
+      if (!video) {
+        return;
+      }
+
+      this.composerGuardVideo = video;
+      video.addEventListener("play", this.boundComposerHoldPause, true);
+      video.addEventListener("playing", this.boundComposerHoldPause, true);
+    }
+
+    detachComposerPlaybackGuard() {
+      if (!this.composerGuardVideo) {
+        return;
+      }
+
+      this.composerGuardVideo.removeEventListener("play", this.boundComposerHoldPause, true);
+      this.composerGuardVideo.removeEventListener("playing", this.boundComposerHoldPause, true);
+      this.composerGuardVideo = null;
+    }
+
+    holdComposerPause() {
+      if (!this.composer || this.composerHoldingPause) {
+        return;
+      }
+
+      this.composerHoldingPause = true;
+      try {
+        this.pauseComposerVideo();
+      } finally {
+        this.composerHoldingPause = false;
+      }
+    }
+
     handleComposerKeyDown(event) {
+      event.stopPropagation();
+
       if (event.key === "Escape") {
         event.preventDefault();
-        event.stopPropagation();
         this.closeDanmakuComposer();
         return;
       }
@@ -1686,6 +1746,7 @@
       this.composer = null;
       this.composerInput = null;
       this.composerPausedPlayback = false;
+      this.detachComposerPlaybackGuard();
       this.cancelComposerPlaybackResume();
       document.removeEventListener("pointerdown", this.boundComposerPointerDown, true);
 

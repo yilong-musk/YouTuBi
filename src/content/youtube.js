@@ -59,6 +59,7 @@
       this.liveChatSource = null;
       this.liveChatReplaySource = null;
       this.playbackController = null;
+      this.adWatcher = null;
       this.timelineScheduler = null;
       this.realtimeScheduler = null;
       this.toggleButton = null;
@@ -255,6 +256,16 @@
       });
       this.timelineScheduler = this.playbackController.timelineScheduler;
       this.realtimeScheduler = this.playbackController.realtimeScheduler;
+      this.adWatcher = new window.YoutubiAdWatcher({
+        player,
+        video,
+        onChange: (showing) => {
+          if (this.playbackController && typeof this.playbackController.handleAdChange === "function") {
+            this.playbackController.handleAdChange(showing);
+          }
+        }
+      });
+      this.adWatcher.start();
       this.startCommentSource(videoId);
       this.startLiveChatSource(videoId, interfaces.liveContinuation);
       this.startLiveChatReplaySource(videoId, video, interfaces.replayContinuation);
@@ -1690,6 +1701,10 @@
         this.liveChatReplaySource.dispose();
       }
 
+      if (this.adWatcher) {
+        this.adWatcher.dispose();
+      }
+
       if (this.playbackController) {
         this.playbackController.dispose();
       } else {
@@ -1713,6 +1728,7 @@
       this.liveChatSource = null;
       this.liveChatReplaySource = null;
       this.playbackController = null;
+      this.adWatcher = null;
       this.timelineScheduler = null;
       this.realtimeScheduler = null;
       this.layer = null;

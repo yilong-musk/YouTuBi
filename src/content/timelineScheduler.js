@@ -55,6 +55,7 @@
       this.initialReleased = false;
       this.initialReleaseTimer = 0;
       this.frameRequest = 0;
+      this.adShowing = false;
       this.lastDuration = 0;
       this.lastRenderedItems = 0;
       this.nextLateAppearAt = null;
@@ -133,6 +134,11 @@
         return;
       }
 
+      if (this.adShowing) {
+        this.startInitialReleaseTimer(RETRY_RELEASE_MS, reason);
+        return;
+      }
+
       const duration = this.getDuration();
       if (!duration) {
         this.startInitialReleaseTimer(RETRY_RELEASE_MS, reason);
@@ -151,6 +157,10 @@
     }
 
     rebuildTimeline(reason = "timeline-rebuilt") {
+      if (this.adShowing) {
+        return;
+      }
+
       if (!this.initialReleased) {
         if (this.initialReleaseRequested) {
           this.releaseInitialTimeline(reason);
@@ -419,6 +429,10 @@
     }
 
     handleDurationChange() {
+      if (this.adShowing) {
+        return;
+      }
+
       const duration = this.getDuration();
       if (!duration) {
         return;
@@ -438,6 +452,30 @@
 
     handleLayoutTimingChange(reason = "layout-updated") {
       this.rebuildTimeline(reason);
+    }
+
+    /**
+     * 广告期间冻结时间线：广告会复用 <video>，duration/currentTime 都会
+     * 变成广告自己的。若不拦住，handleDurationChange 会按广告时长重建时间线，
+     * 所有弹幕被压缩到十几秒内一次性放完。
+     */
+    setAdShowing(active) {
+      const next = Boolean(active);
+      if (this.adShowing === next) {
+        return;
+      }
+
+      this.adShowing = next;
+
+      if (next) {
+        this.clearLayer();
+        this.notifyState({ status: "ad-playing" });
+        return;
+      }
+
+      this.lastDuration = this.getDuration() || this.lastDuration;
+      this.rebuildTimeline("ad-ended");
+      this.notifyState({ status: "ad-ended" });
     }
 
     compareComments(left, right) {
@@ -527,7 +565,7 @@
     }
 
     renderNow() {
-      if (!this.layer || !this.video) {
+      if (!this.layer || !this.video || this.adShowing) {
         return;
       }
 

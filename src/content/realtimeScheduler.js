@@ -24,6 +24,9 @@
       this.pausedAt = 0;
       this.pausedTotalMs = 0;
       this.paused = Boolean(video && video.paused);
+      this.adShowing = false;
+      this.adStartedAt = 0;
+      this.adTotalMs = 0;
       this.nextAppearAt = 0;
       this.order = 0;
       this.lastRenderedItems = 0;
@@ -58,6 +61,16 @@
 
     addComment(comment) {
       if (!comment || !comment.id || this.comments.has(comment.id)) {
+        return;
+      }
+
+      if (this.adShowing) {
+        this.droppedCount += 1;
+        this.notifyState({
+          status: "realtime-dropped",
+          liveChatDropped: this.droppedCount,
+          liveChatQueued: this.countFutureItems(this.getCurrentTime())
+        });
         return;
       }
 
@@ -255,6 +268,40 @@
       this.notifyState({ status: "realtime-ended" });
     }
 
+    /**
+     * 广告期间冻结实时弹幕时钟：YouTube 广告会占用同一个播放器与 <video>，
+     * 若不冻结，广告期间的聊天弹幕会按真实时间堆积，广告结束后一次性补播。
+     */
+    setAdShowing(active) {
+      const next = Boolean(active);
+      if (this.adShowing === next) {
+        return;
+      }
+
+      this.adShowing = next;
+
+      if (next) {
+        this.adStartedAt = performance.now();
+        if (this.frameRequest) {
+          window.cancelAnimationFrame(this.frameRequest);
+          this.frameRequest = 0;
+        }
+        this.clearLayer();
+        this.notifyState({ status: "ad-playing" });
+        return;
+      }
+
+      if (this.adStartedAt) {
+        this.adTotalMs += Math.max(0, performance.now() - this.adStartedAt);
+        this.adStartedAt = 0;
+      }
+
+      const now = this.getCurrentTime();
+      this.nextAppearAt = Math.max(now + FIRST_APPEAR_DELAY_SECONDS, this.nextAppearAt);
+      this.publishTimeline("ad-ended");
+      this.startFrameLoop();
+    }
+
     reset(reason = "realtime-reset") {
       window.clearTimeout(this.publishTimer);
       this.comments.clear();
@@ -273,8 +320,11 @@
     }
 
     getCurrentTime() {
-      const now = this.paused && this.pausedAt ? this.pausedAt : performance.now();
-      return Math.max(0, (now - this.startedAt - this.pausedTotalMs) / 1000);
+      const fallback = performance.now();
+      const now = this.paused && this.pausedAt
+        ? this.pausedAt
+        : (this.adShowing && this.adStartedAt ? this.adStartedAt : fallback);
+      return Math.max(0, (now - this.startedAt - this.pausedTotalMs - this.adTotalMs) / 1000);
     }
 
     dispose() {

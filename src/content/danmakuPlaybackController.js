@@ -81,6 +81,16 @@
       }
     }
 
+    handleAdChange(active) {
+      if (this.timelineScheduler && typeof this.timelineScheduler.setAdShowing === "function") {
+        this.timelineScheduler.setAdShowing(active);
+      }
+
+      if (this.realtimeScheduler && typeof this.realtimeScheduler.setAdShowing === "function") {
+        this.realtimeScheduler.setAdShowing(active);
+      }
+    }
+
     setSettings(settings) {
       if (this.layer && typeof this.layer.setSettings === "function") {
         this.layer.setSettings(settings);

@@ -27,7 +27,9 @@ jobs:
           done < <(find src -name '*.js' -print0)
 
       - name: Run ad compatibility tests
-        run: node tests/ad-compat.test.js
+        run: |
+          node tests/ad-compat.test.js
+          node tests/ad-speedup.test.js
 
       - name: Validate JSON and i18n keys
         shell: bash

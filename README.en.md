@@ -17,11 +17,12 @@ A browser extension (Chrome / Edge) that turns YouTube comments and live chat in
 - Send button (left of the toggle): pauses playback and opens an input box; press Enter to post a comment danmaku with a timestamp; Esc or clicking outside closes it and resumes playback
 - Comments starting with a timestamp like "13:45 xxx" appear at that moment in the video, without showing the time prefix
 - Click the extension icon in the top-right to adjust area, speed, font size, opacity, and preload count
+- Ads play at 16x, muted, with the skip button clicked automatically; can be turned off in the popup
 
 ## Privacy
 
 - Runs only on YouTube pages; data is never sent to third-party servers
-- No permissions required
+- Only `storage` and YouTube host access are requested; data is never sent to third-party servers
 
 ## License
 

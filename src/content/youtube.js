@@ -60,6 +60,7 @@
       this.liveChatReplaySource = null;
       this.playbackController = null;
       this.adWatcher = null;
+      this.adSpeedup = null;
       this.timelineScheduler = null;
       this.realtimeScheduler = null;
       this.toggleButton = null;
@@ -256,12 +257,21 @@
       });
       this.timelineScheduler = this.playbackController.timelineScheduler;
       this.realtimeScheduler = this.playbackController.realtimeScheduler;
+      this.adSpeedup = new window.YoutubiAdSpeedup({
+        player,
+        video,
+        settings: this.settings
+      });
       this.adWatcher = new window.YoutubiAdWatcher({
         player,
         video,
         onChange: (showing) => {
           if (this.playbackController && typeof this.playbackController.handleAdChange === "function") {
             this.playbackController.handleAdChange(showing);
+          }
+
+          if (this.adSpeedup && typeof this.adSpeedup.setAdShowing === "function") {
+            this.adSpeedup.setAdShowing(showing);
           }
         }
       });
@@ -667,6 +677,10 @@
     }
 
     applySettings(status) {
+      if (this.adSpeedup && typeof this.adSpeedup.setSettings === "function") {
+        this.adSpeedup.setSettings(this.settings);
+      }
+
       if (this.playbackController && typeof this.playbackController.setSettings === "function") {
         this.playbackController.setSettings(this.settings);
         this.updateDebugState({ status });
@@ -1705,6 +1719,10 @@
         this.adWatcher.dispose();
       }
 
+      if (this.adSpeedup) {
+        this.adSpeedup.dispose();
+      }
+
       if (this.playbackController) {
         this.playbackController.dispose();
       } else {
@@ -1729,6 +1747,7 @@
       this.liveChatReplaySource = null;
       this.playbackController = null;
       this.adWatcher = null;
+      this.adSpeedup = null;
       this.timelineScheduler = null;
       this.realtimeScheduler = null;
       this.layer = null;

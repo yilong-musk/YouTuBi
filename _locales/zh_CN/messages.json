@@ -11,6 +11,10 @@
     "message": "弹幕",
     "description": "弹幕开关设置标签。"
   },
+  "popupAdSpeedup": {
+    "message": "广告加速",
+    "description": "广告 16 倍速跳过开关设置标签。"
+  },
   "popupDanmakuArea": {
     "message": "弹幕范围",
     "description": "弹幕显示区域设置标签。"

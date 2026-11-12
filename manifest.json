@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "default_locale": "en",
   "description": "__MSG_extDescription__",
   "icons": {
@@ -35,6 +35,7 @@
         "src/content/youtubeCommentApiSource.js",
         "src/content/youtubeLiveChatSource.js",
         "src/content/adWatcher.js",
+        "src/content/adSpeedup.js",
         "src/content/timelineScheduler.js",
         "src/content/realtimeScheduler.js",
         "src/content/danmakuPlaybackController.js",

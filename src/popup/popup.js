@@ -14,6 +14,7 @@ const TRACK_RATIO_LABELS = new Map([
 
 const controls = {
   enabled: document.querySelector("#enabled"),
+  adSpeedup: document.querySelector("#adSpeedup"),
   trackRatio: document.querySelector("#trackRatio"),
   speed: document.querySelector("#speed"),
   fontSize: document.querySelector("#fontSize"),
@@ -58,6 +59,7 @@ const renderTrackRatio = (value) => {
 const render = (settings) => {
   currentSettings = settings;
   controls.enabled.checked = settings.enabled;
+  controls.adSpeedup.checked = settings.adSpeedup;
   controls.speed.value = settings.speed;
   controls.fontSize.value = settings.fontSize;
   controls.opacity.value = settings.opacity;
@@ -134,6 +136,7 @@ window.addEventListener("pagehide", () => {
 });
 
 controls.enabled.addEventListener("change", () => saveImmediately({ enabled: controls.enabled.checked }));
+controls.adSpeedup.addEventListener("change", () => saveImmediately({ adSpeedup: controls.adSpeedup.checked }));
 controls.trackRatio.addEventListener("click", (event) => {
   const button = event.target.closest("button[data-track-ratio]");
   if (!button || !currentSettings) {

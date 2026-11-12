@@ -11,6 +11,10 @@
     "message": "Danmaku",
     "description": "Danmaku enabled setting label."
   },
+  "popupAdSpeedup": {
+    "message": "Speed up ads",
+    "description": "Ad fast-forward setting label."
+  },
   "popupDanmakuArea": {
     "message": "Danmaku area",
     "description": "Danmaku display area setting label."

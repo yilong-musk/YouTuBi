@@ -152,8 +152,79 @@ function testDoesNotClickHiddenSkipButton() {
   console.log("PASS adSpeedup: 跳过按钮不可见时不点击");
 }
 
+
+function createPodPlayer() {
+  const player = {
+    ads: [],
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    querySelectorAll(selector) {
+      return selector === ".video-ads video" ? player.ads.slice() : [];
+    },
+    querySelector(selector) {
+      if (selector === ".video-ads") {
+        return null;
+      }
+      if (selector === "video.html5-main-video, video") {
+        return player.ads[0] || null;
+      }
+      return null;
+    }
+  };
+  return player;
+}
+
+function testPodSwitchesVideoElement() {
+  const window = loadAdSpeedup();
+  const player = createPodPlayer();
+  const first = createVideo();
+  player.ads = [first];
+  const speedup = new window.YoutubiAdSpeedup({ player, video: first, settings: { adSpeedup: true } });
+
+  speedup.setAdShowing(true);
+  assert.strictEqual(first.playbackRate, 16, "第一条广告应加速");
+
+  // 广告连播：YouTube 换了一个新的 video 元素
+  const second = createVideo();
+  player.ads = [second];
+  speedup.tick();
+
+  assert.strictEqual(second.playbackRate, 16, "第二条广告（新 video 元素）也应被加速");
+  assert.strictEqual(second.muted, true, "第二条广告应静音");
+
+  speedup.setAdShowing(false);
+  assert.strictEqual(first.playbackRate, 1, "第一条广告元素应恢复原倍速");
+  assert.strictEqual(second.playbackRate, 1, "第二条广告元素也应恢复原倍速");
+  assert.strictEqual(second.muted, false, "第二条广告元素应恢复声音");
+
+  speedup.dispose();
+  console.log("PASS adSpeedup: 广告连播换 video 元素时第二条仍能加速/静音/恢复");
+}
+
+function testPodKeepsRateWhenPlayerResetsIt() {
+  const window = loadAdSpeedup();
+  const player = createPodPlayer();
+  const video = createVideo();
+  player.ads = [video];
+  const speedup = new window.YoutubiAdSpeedup({ player, video, settings: { adSpeedup: true } });
+
+  speedup.setAdShowing(true);
+  assert.strictEqual(video.playbackRate, 16);
+
+  // 模拟播放器把倍速重置为 1（广告切换时常见）
+  video.playbackRate = 1;
+  speedup.tick();
+  assert.strictEqual(video.playbackRate, 16, "倍速被播放器重置后应在下一次 tick 恢复");
+
+  speedup.setAdShowing(false);
+  speedup.dispose();
+  console.log("PASS adSpeedup: 播放器重置倍速后自动恢复 16x");
+}
+
 testSpeedsUpAndRestores();
 testRespectsDisabledSetting();
 testMidAdDisableRestores();
 testDoesNotClickHiddenSkipButton();
+testPodSwitchesVideoElement();
+testPodKeepsRateWhenPlayerResetsIt();
 console.log("全部广告加速测试通过");

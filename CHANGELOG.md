@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.3 - 2026-11-12
+
+- 修复广告连播时第二条广告不加速/不静音：之前只记住进入广告时的 `<video>` 元素（以及唯一一次保存的倍速状态），广告连播切换到新元素或播放器把倍速重置为 1 后就失效。现在每次 tick 重新解析当前在播的 video（`.video-ads video` + 主视频），逐个元素保存/恢复状态，并监听 `loadedmetadata`/`play`/`ratechange` 等事件即时重新施加。
+- 跳过按钮可见性判断改用 `getClientRects()`，修掉定位为 fixed 的按钮 `offsetParent === null` 被误判为不可见、不点击的问题。
+- 新增两条回归测试：换 video 元素、播放器重置倍速。
+
+
 ## 0.4.2 - 2026-11-12
 
 - 去广告新增网络层：开启开关后，用 `declarativeNetRequest` 规则集拦截 YouTube 页面发往 doubleclick / googlesyndication / pagead 等广告域名的请求（7 条规则，仅随开关启停）。

@@ -5,6 +5,7 @@
   const DEFAULT_SETTINGS = {
     enabled: true,
     adSpeedup: true,
+    adBlock: true,
     fontSize: 22,
     speed: 90,
     opacity: 0.7,
@@ -51,6 +52,7 @@
     return {
       enabled: typeof raw.enabled === "boolean" ? raw.enabled : DEFAULT_SETTINGS.enabled,
       adSpeedup: typeof raw.adSpeedup === "boolean" ? raw.adSpeedup : DEFAULT_SETTINGS.adSpeedup,
+      adBlock: typeof raw.adBlock === "boolean" ? raw.adBlock : DEFAULT_SETTINGS.adBlock,
       fontSize: clamp(Number(raw.fontSize) || DEFAULT_SETTINGS.fontSize, 14, 42),
       speed: clamp(Number(raw.speed) || DEFAULT_SETTINGS.speed, 40, 180),
       opacity: clamp(Number(raw.opacity) || DEFAULT_SETTINGS.opacity, 0.25, 1),

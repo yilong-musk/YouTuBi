@@ -29,6 +29,7 @@
       "js": [
         "src/shared/i18n.js",
         "src/shared/settings.js",
+        "src/content/adblockBridge.js",
         "src/content/danmakuLayer.js",
         "src/content/commentSource.js",
         "src/content/youtubeInnertube.js",
@@ -42,6 +43,12 @@
         "src/content/youtube.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.youtube.com/*", "https://youtube.com/*"],
+      "js": ["src/content/adblockMain.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ]
 }

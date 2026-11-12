@@ -31,6 +31,7 @@ jobs:
           node tests/ad-compat.test.js
           node tests/ad-speedup.test.js
           node tests/adblock.test.js
+          node tests/adblock-bridge.test.js
 
       - name: Validate JSON and i18n keys
         shell: bash

@@ -410,3 +410,23 @@ ytd-app[dark] .ytbm-watch-toggle[aria-pressed="true"] .ytbm-watch-toggle-track,
   background: rgba(255, 255, 255, 0.92);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3);
 }
+
+/* 页面占位广告（仅在「去广告」开关开启时生效，由 adblockBridge 设置 data 属性） */
+html[data-youtubi-ad-block="1"] #masthead-ad,
+html[data-youtubi-ad-block="1"] #player-ads,
+html[data-youtubi-ad-block="1"] ytd-ad-slot-renderer,
+html[data-youtubi-ad-block="1"] ytd-in-feed-ad-layout-renderer,
+html[data-youtubi-ad-block="1"] ytd-display-ad-renderer,
+html[data-youtubi-ad-block="1"] ytd-promoted-video-renderer,
+html[data-youtubi-ad-block="1"] ytd-promoted-sparkles-web-renderer,
+html[data-youtubi-ad-block="1"] ytd-search-pyv-renderer,
+html[data-youtubi-ad-block="1"] ytd-banner-promo-renderer,
+html[data-youtubi-ad-block="1"] ytd-statement-banner-renderer,
+html[data-youtubi-ad-block="1"] ytd-companion-slot-renderer,
+html[data-youtubi-ad-block="1"] ytd-action-companion-ad-renderer,
+html[data-youtubi-ad-block="1"] ytd-rich-item-renderer:has(ytd-ad-slot-renderer),
+html[data-youtubi-ad-block="1"] .ytp-ad-overlay-container,
+html[data-youtubi-ad-block="1"] .ytp-ad-image-overlay,
+html[data-youtubi-ad-block="1"] .ytp-ad-text-overlay {
+  display: none !important;
+}

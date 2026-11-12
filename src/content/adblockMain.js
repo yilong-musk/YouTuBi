@@ -174,6 +174,11 @@
     }
 
     enabled = Boolean(data.__youtubiAdBlock);
+
+    // 晚到的开关（首屏已在页面里赋值）也尽量补救：就地清理已存在的响应对象
+    if (enabled && window.ytInitialPlayerResponse) {
+      stripAds(window.ytInitialPlayerResponse);
+    }
   });
 
   window.__youtubiAdBlock = {

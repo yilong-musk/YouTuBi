@@ -15,6 +15,10 @@
     "message": "Speed up ads",
     "description": "Ad fast-forward setting label."
   },
+  "popupAdBlock": {
+    "message": "Block ads (beta)",
+    "description": "Experimental real ad blocking toggle."
+  },
   "popupDanmakuArea": {
     "message": "Danmaku area",
     "description": "Danmaku display area setting label."

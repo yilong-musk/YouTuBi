@@ -15,6 +15,10 @@
     "message": "广告加速",
     "description": "广告 16 倍速跳过开关设置标签。"
   },
+  "popupAdBlock": {
+    "message": "去广告（实验）",
+    "description": "Experimental real ad blocking toggle."
+  },
   "popupDanmakuArea": {
     "message": "弹幕范围",
     "description": "弹幕显示区域设置标签。"

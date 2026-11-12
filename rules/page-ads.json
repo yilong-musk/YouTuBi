@@ -1,0 +1,156 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "initiatorDomains": [
+        "youtube.com"
+      ],
+      "requestDomains": [
+        "doubleclick.net"
+      ],
+      "resourceTypes": [
+        "script",
+        "image",
+        "xmlhttprequest",
+        "sub_frame",
+        "ping",
+        "other",
+        "media",
+        "stylesheet",
+        "font"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "initiatorDomains": [
+        "youtube.com"
+      ],
+      "requestDomains": [
+        "googlesyndication.com"
+      ],
+      "resourceTypes": [
+        "script",
+        "image",
+        "xmlhttprequest",
+        "sub_frame",
+        "ping",
+        "other",
+        "media",
+        "stylesheet",
+        "font"
+      ]
+    }
+  },
+  {
+    "id": 3,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "initiatorDomains": [
+        "youtube.com"
+      ],
+      "requestDomains": [
+        "googleadservices.com",
+        "googletagservices.com",
+        "googletagmanager.com"
+      ],
+      "resourceTypes": [
+        "script",
+        "image",
+        "xmlhttprequest",
+        "sub_frame",
+        "ping",
+        "other"
+      ]
+    }
+  },
+  {
+    "id": 4,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "initiatorDomains": [
+        "youtube.com"
+      ],
+      "urlFilter": "/pagead/",
+      "resourceTypes": [
+        "script",
+        "image",
+        "xmlhttprequest",
+        "sub_frame",
+        "ping",
+        "other",
+        "media"
+      ]
+    }
+  },
+  {
+    "id": 5,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "initiatorDomains": [
+        "youtube.com"
+      ],
+      "urlFilter": "/api/stats/ads",
+      "resourceTypes": [
+        "xmlhttprequest",
+        "ping",
+        "other"
+      ]
+    }
+  },
+  {
+    "id": 6,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "initiatorDomains": [
+        "youtube.com"
+      ],
+      "urlFilter": "doubleclick.net/instream/ad_status.js",
+      "resourceTypes": [
+        "script"
+      ]
+    }
+  },
+  {
+    "id": 7,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "requestDomains": [
+        "googleads.g.doubleclick.net"
+      ],
+      "resourceTypes": [
+        "script",
+        "image",
+        "xmlhttprequest",
+        "sub_frame",
+        "ping",
+        "other",
+        "media"
+      ]
+    }
+  }
+]

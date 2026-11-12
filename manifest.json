@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_extName__",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "default_locale": "en",
   "description": "__MSG_extDescription__",
   "icons": {
@@ -10,7 +10,19 @@
     "48": "assets/icons/icon-48.png",
     "128": "assets/icons/icon-128.png"
   },
-  "permissions": ["storage"],
+  "permissions": ["storage", "declarativeNetRequest"],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "youtube-page-ads",
+        "enabled": false,
+        "path": "rules/page-ads.json"
+      }
+    ]
+  },
   "host_permissions": ["https://www.youtube.com/*", "https://youtube.com/*"],
   "action": {
     "default_title": "__MSG_extName__",

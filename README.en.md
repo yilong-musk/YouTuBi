@@ -23,7 +23,7 @@ A browser extension (Chrome / Edge) that turns YouTube comments and live chat in
 ## Privacy
 
 - Runs only on YouTube pages; data is never sent to third-party servers
-- Only `storage` and YouTube host access are requested; data is never sent to third-party servers
+- Only `storage`, `declarativeNetRequest` and YouTube host access are requested; with ad blocking enabled, requests from YouTube pages to ad domains are blocked. Data is never sent to third-party servers
 
 ## License
 

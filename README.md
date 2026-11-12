@@ -23,7 +23,7 @@
 ## 隐私
 
 - 只在 YouTube 页面运行，数据不发送到第三方服务器
-- 只申请 `storage` 与 YouTube 站点访问权限，数据不发送到第三方服务器
+- 只申请 `storage`、`declarativeNetRequest` 与 YouTube 站点访问权限；开启去广告时会拦截 YouTube 页面发往广告域名的请求，数据不发送到第三方服务器
 
 ## License
 

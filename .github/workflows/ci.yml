@@ -32,6 +32,7 @@ jobs:
           node tests/ad-speedup.test.js
           node tests/adblock.test.js
           node tests/adblock-bridge.test.js
+          node tests/background.test.js
 
       - name: Validate JSON and i18n keys
         shell: bash
@@ -118,7 +119,7 @@ jobs:
 
           zip_path="dist/${{ steps.meta.outputs.zip_name }}"
           mkdir -p dist
-          zip -r "${zip_path}" manifest.json _locales assets src README.md CHANGELOG.md -x "*.DS_Store"
+          zip -r "${zip_path}" manifest.json _locales assets src rules README.md CHANGELOG.md -x "*.DS_Store"
 
           unzip -Z1 "${zip_path}" | grep -qx "manifest.json"
           if unzip -Z1 "${zip_path}" | grep -q "^${EXTENSION_SLUG}/"; then

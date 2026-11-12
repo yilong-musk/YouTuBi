@@ -18,6 +18,7 @@ A browser extension (Chrome / Edge) that turns YouTube comments and live chat in
 - Comments starting with a timestamp like "13:45 xxx" appear at that moment in the video, without showing the time prefix
 - Click the extension icon in the top-right to adjust area, speed, font size, opacity, and preload count
 - Ads play at 16x, muted, with the skip button clicked automatically; can be turned off in the popup
+- Experimental ad blocking (off by default, enable in the popup): only removes classic in-stream ad placements; server-side stitched ads cannot be removed and it may break when YouTube updates the player
 
 ## Privacy
 

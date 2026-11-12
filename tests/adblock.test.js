@@ -100,7 +100,7 @@ async function testFetchStripsPlayerAds() {
   const { window } = loadAdBlock(async () => new Response(JSON.stringify(playerPayload()), {
     status: 200,
     headers: { "Content-Type": "application/json" }
-  }));
+  }), "1");
 
   const response = await window.fetch("https://www.youtube.com/youtubei/v1/player?key=k");
   assertClean(await response.json(), "fetch");
@@ -108,7 +108,7 @@ async function testFetchStripsPlayerAds() {
 }
 
 async function testFetchLeavesOtherRequestsAlone() {
-  const { window } = loadAdBlock(async () => new Response(JSON.stringify(playerPayload()), { status: 200 }));
+  const { window } = loadAdBlock(async () => new Response(JSON.stringify(playerPayload()), { status: 200 }), "1");
 
   const response = await window.fetch("https://www.youtube.com/youtubei/v1/next?key=k");
   const payload = await response.json();
@@ -117,7 +117,7 @@ async function testFetchLeavesOtherRequestsAlone() {
 }
 
 async function testDisableSwitch() {
-  const { window, messages } = loadAdBlock(async () => new Response(JSON.stringify(playerPayload()), { status: 200 }));
+  const { window, messages } = loadAdBlock(async () => new Response(JSON.stringify(playerPayload()), { status: 200 }), "1");
 
   for (const handler of messages) {
     handler({ source: window, data: { __youtubiAdBlock: false } });
@@ -134,7 +134,7 @@ async function testDisableSwitch() {
 }
 
 function testXhrStripsPlayerAds() {
-  const { window } = loadAdBlock();
+  const { window } = loadAdBlock(null, "1");
   const xhr = new window.XMLHttpRequest();
   xhr.open("POST", "https://www.youtube.com/youtubei/v1/player?key=k");
   xhr.send();
@@ -146,10 +146,18 @@ function testXhrStripsPlayerAds() {
 }
 
 function testInitialPlayerResponseStripped() {
-  const { window } = loadAdBlock();
+  const { window } = loadAdBlock(null, "1");
   window.ytInitialPlayerResponse = playerPayload();
   assertClean(window.ytInitialPlayerResponse, "ytInitialPlayerResponse");
   console.log("PASS adblock: 首屏 ytInitialPlayerResponse 去广告字段");
+}
+
+async function testDefaultDisabled() {
+  const { window } = loadAdBlock(async () => new Response(JSON.stringify(playerPayload()), { status: 200 }));
+  const response = await window.fetch("https://www.youtube.com/youtubei/v1/player?key=k");
+  const payload = await response.json();
+  assert.ok(payload.adPlacements, "默认关闭时不应清理广告字段");
+  console.log("PASS adblock: 默认关闭（未选择启用时不介入）");
 }
 
 async function testStoredDisabledValue() {
@@ -162,6 +170,7 @@ async function testStoredDisabledValue() {
 
 (async () => {
   await testFetchStripsPlayerAds();
+  await testDefaultDisabled();
   await testStoredDisabledValue();
   await testFetchLeavesOtherRequestsAlone();
   await testDisableSwitch();

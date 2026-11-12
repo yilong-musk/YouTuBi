@@ -5,7 +5,7 @@
   const DEFAULT_SETTINGS = {
     enabled: true,
     adSpeedup: true,
-    adBlock: true,
+    adBlock: false,
     fontSize: 22,
     speed: 90,
     opacity: 0.7,

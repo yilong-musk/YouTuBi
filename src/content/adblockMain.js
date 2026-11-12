@@ -2,15 +2,16 @@
   const PLAYER_URL_RE = /\/youtubei\/v1\/player(\?|$)/;
   const AD_KEYS = ["adPlacements", "playerAds", "adSlots"];
 
-  let enabled = true;
+  // 默认关闭：只有用户在弹窗里显式开启过（localStorage 记为 "1"）才工作
+  let enabled = false;
 
   try {
     const stored = window.localStorage && window.localStorage.getItem("youtubi.adBlock");
-    if (stored !== null && stored !== undefined) {
-      enabled = stored === "1";
+    if (stored === "1") {
+      enabled = true;
     }
   } catch (error) {
-    // 隐私模式下 localStorage 可能不可用，保持默认开启
+    // 隐私模式下 localStorage 不可用，保持关闭
   }
 
   const stripAds = (value) => {
